@@ -217,7 +217,7 @@
 
 
 }).call(this,undefined)
-},{"stackframe":8}],2:[function(_dereq_,module,exports){
+},{"stackframe":7}],2:[function(_dereq_,module,exports){
 (function (process,global,define){
 /*!
  * @overview es6-promise - a tiny implementation of Promises/A+.
@@ -1187,8 +1187,8 @@
 }).call(this);
 
 
-}).call(this,_dereq_('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},undefined)
-},{"_process":4}],3:[function(_dereq_,module,exports){
+}).call(this,undefined,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},undefined)
+},{}],3:[function(_dereq_,module,exports){
 (function (define){
 /*
 * loglevel - https://github.com/pimterry/loglevel
@@ -1416,102 +1416,9 @@
 
 }).call(this,undefined)
 },{}],4:[function(_dereq_,module,exports){
-// shim for using process in browser
-
-var process = module.exports = {};
-var queue = [];
-var draining = false;
-var currentQueue;
-var queueIndex = -1;
-
-function cleanUpNextTick() {
-    draining = false;
-    if (currentQueue.length) {
-        queue = currentQueue.concat(queue);
-    } else {
-        queueIndex = -1;
-    }
-    if (queue.length) {
-        drainQueue();
-    }
-}
-
-function drainQueue() {
-    if (draining) {
-        return;
-    }
-    var timeout = setTimeout(cleanUpNextTick);
-    draining = true;
-
-    var len = queue.length;
-    while(len) {
-        currentQueue = queue;
-        queue = [];
-        while (++queueIndex < len) {
-            if (currentQueue) {
-                currentQueue[queueIndex].run();
-            }
-        }
-        queueIndex = -1;
-        len = queue.length;
-    }
-    currentQueue = null;
-    draining = false;
-    clearTimeout(timeout);
-}
-
-process.nextTick = function (fun) {
-    var args = new Array(arguments.length - 1);
-    if (arguments.length > 1) {
-        for (var i = 1; i < arguments.length; i++) {
-            args[i - 1] = arguments[i];
-        }
-    }
-    queue.push(new Item(fun, args));
-    if (queue.length === 1 && !draining) {
-        setTimeout(drainQueue, 0);
-    }
-};
-
-// v8 likes predictible objects
-function Item(fun, array) {
-    this.fun = fun;
-    this.array = array;
-}
-Item.prototype.run = function () {
-    this.fun.apply(null, this.array);
-};
-process.title = 'browser';
-process.browser = true;
-process.env = {};
-process.argv = [];
-process.version = ''; // empty string to avoid regexp issues
-process.versions = {};
-
-function noop() {}
-
-process.on = noop;
-process.addListener = noop;
-process.once = noop;
-process.off = noop;
-process.removeListener = noop;
-process.removeAllListeners = noop;
-process.emit = noop;
-
-process.binding = function (name) {
-    throw new Error('process.binding is not supported');
-};
-
-process.cwd = function () { return '/' };
-process.chdir = function (dir) {
-    throw new Error('process.chdir is not supported');
-};
-process.umask = function() { return 0; };
-
-},{}],5:[function(_dereq_,module,exports){
 module.exports = _dereq_('./lib/simple_lru.js');
 
-},{"./lib/simple_lru.js":6}],6:[function(_dereq_,module,exports){
+},{"./lib/simple_lru.js":5}],5:[function(_dereq_,module,exports){
 "use strict";
 
 /**
@@ -1659,7 +1566,7 @@ Cache.prototype.forEach = function(callback){
 }
 module.exports=Cache
 
-},{}],7:[function(_dereq_,module,exports){
+},{}],6:[function(_dereq_,module,exports){
 (function (define){
 (function (root, factory) {
     'use strict';
@@ -1708,7 +1615,7 @@ module.exports=Cache
 }));
 
 }).call(this,undefined)
-},{"stackframe":8}],8:[function(_dereq_,module,exports){
+},{"stackframe":7}],7:[function(_dereq_,module,exports){
 (function (define){
 (function (root, factory) {
     'use strict';
@@ -1819,7 +1726,7 @@ module.exports=Cache
 }));
 
 }).call(this,undefined)
-},{}],9:[function(_dereq_,module,exports){
+},{}],8:[function(_dereq_,module,exports){
 (function (global){
 var core = _dereq_('../core');
 var browserPatch = _dereq_('../patch/browser');
@@ -1834,7 +1741,7 @@ else {
 exports.Zone = global.Zone;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../core":10,"../patch/browser":12}],10:[function(_dereq_,module,exports){
+},{"../core":9,"../patch/browser":11}],9:[function(_dereq_,module,exports){
 (function (global){
 var keys = _dereq_('./keys');
 var promise = _dereq_('./patch/promise');
@@ -1979,7 +1886,7 @@ exports.Zone = Zone;
 ;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./keys":11,"./patch/promise":19}],11:[function(_dereq_,module,exports){
+},{"./keys":10,"./patch/promise":18}],10:[function(_dereq_,module,exports){
 /**
  * Creates keys for `private` properties on exposed objects to minimize interactions with other codebases.
  */
@@ -1993,7 +1900,7 @@ exports.common = {
     removeEventListener: create('removeEventListener')
 };
 
-},{}],12:[function(_dereq_,module,exports){
+},{}],11:[function(_dereq_,module,exports){
 (function (global){
 var fnPatch = _dereq_('./functions');
 var promisePatch = _dereq_('./promise');
@@ -2030,7 +1937,7 @@ function apply() {
 exports.apply = apply;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./define-property":13,"./event-target":14,"./file-reader":15,"./functions":16,"./geolocation":17,"./mutation-observer":18,"./promise":19,"./property-descriptor":20,"./register-element":21}],13:[function(_dereq_,module,exports){
+},{"./define-property":12,"./event-target":13,"./file-reader":14,"./functions":15,"./geolocation":16,"./mutation-observer":17,"./promise":18,"./property-descriptor":19,"./register-element":20}],12:[function(_dereq_,module,exports){
 var keys = _dereq_('../keys');
 // might need similar for object.freeze
 // i regret nothing
@@ -2092,7 +1999,7 @@ function rewriteDescriptor(obj, prop, desc) {
     return desc;
 }
 
-},{"../keys":11}],14:[function(_dereq_,module,exports){
+},{"../keys":10}],13:[function(_dereq_,module,exports){
 (function (global){
 'use strict';
 var utils = _dereq_('../utils');
@@ -2142,14 +2049,14 @@ function apply() {
 exports.apply = apply;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../utils":23}],15:[function(_dereq_,module,exports){
+},{"../utils":22}],14:[function(_dereq_,module,exports){
 var utils = _dereq_('../utils');
 function apply() {
     utils.patchClass('FileReader');
 }
 exports.apply = apply;
 
-},{"../utils":23}],16:[function(_dereq_,module,exports){
+},{"../utils":22}],15:[function(_dereq_,module,exports){
 (function (global){
 var wtf = _dereq_('../wtf');
 function patchSetClearFunction(window, Zone, fnNames) {
@@ -2248,7 +2155,7 @@ exports.patchFunction = patchFunction;
 ;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../wtf":24}],17:[function(_dereq_,module,exports){
+},{"../wtf":23}],16:[function(_dereq_,module,exports){
 (function (global){
 var utils = _dereq_('../utils');
 function apply() {
@@ -2262,7 +2169,7 @@ function apply() {
 exports.apply = apply;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../utils":23}],18:[function(_dereq_,module,exports){
+},{"../utils":22}],17:[function(_dereq_,module,exports){
 (function (global){
 var keys = _dereq_('../keys');
 var originalInstanceKey = keys.create('originalInstance');
@@ -2327,7 +2234,7 @@ exports.patchClass = patchClass;
 ;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../keys":11}],19:[function(_dereq_,module,exports){
+},{"../keys":10}],18:[function(_dereq_,module,exports){
 (function (global){
 var utils = _dereq_('../utils');
 if (global.Promise) {
@@ -2409,7 +2316,7 @@ module.exports = {
 };
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../utils":23}],20:[function(_dereq_,module,exports){
+},{"../utils":22}],19:[function(_dereq_,module,exports){
 (function (global){
 var webSocketPatch = _dereq_('./websocket');
 var utils = _dereq_('../utils');
@@ -2488,7 +2395,7 @@ function patchViaCapturingAllTheEvents() {
 ;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../keys":11,"../utils":23,"./websocket":22}],21:[function(_dereq_,module,exports){
+},{"../keys":10,"../utils":22,"./websocket":21}],20:[function(_dereq_,module,exports){
 (function (global){
 var define_property_1 = _dereq_('./define-property');
 var utils = _dereq_('../utils');
@@ -2527,7 +2434,7 @@ function apply() {
 exports.apply = apply;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../utils":23,"./define-property":13}],22:[function(_dereq_,module,exports){
+},{"../utils":22,"./define-property":12}],21:[function(_dereq_,module,exports){
 (function (global){
 var utils = _dereq_('../utils');
 // we have to patch the instance since the proto is non-configurable
@@ -2562,7 +2469,7 @@ function apply() {
 exports.apply = apply;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../utils":23}],23:[function(_dereq_,module,exports){
+},{"../utils":22}],22:[function(_dereq_,module,exports){
 (function (process,global){
 var keys = _dereq_('./keys');
 function bindArguments(args) {
@@ -2761,8 +2668,8 @@ function patchClass(className) {
 exports.patchClass = patchClass;
 ;
 
-}).call(this,_dereq_('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./keys":11,"_process":4}],24:[function(_dereq_,module,exports){
+}).call(this,undefined,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./keys":10}],23:[function(_dereq_,module,exports){
 (function (global){
 // Detect and setup WTF.
 var wtfTrace = null;
@@ -2808,14 +2715,14 @@ exports.endTimeRange = wtfEnabled ? function (range) {
 };
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],25:[function(_dereq_,module,exports){
+},{}],24:[function(_dereq_,module,exports){
 (function (global){
 _dereq_('./browser/zone');
 exports.Zone = global.Zone;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./browser/zone":9}],26:[function(_dereq_,module,exports){
-var patchUtils = _dereq_('../patchUtils')
+},{"./browser/zone":8}],25:[function(_dereq_,module,exports){
+var patchUtils = _dereq_('../patching/patchUtils')
 var utils = _dereq_('../lib/utils')
 module.exports = function ($provide, transactionService) {
   $provide.decorator('$compile', ['$delegate', '$injector', function ($delegate, $injector) {
@@ -2842,31 +2749,62 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{"../lib/utils":49,"../patchUtils":51}],27:[function(_dereq_,module,exports){
-var utils = _dereq_('../instrumentation/utils')
+},{"../lib/utils":47,"../patching/patchUtils":48}],26:[function(_dereq_,module,exports){
+var utils = _dereq_('../lib/utils')
 
-module.exports = function ($provide, traceBuffer) {
-  // Controller Instrumentation
+function getControllerInfoFromArgs (args) {
+  var scope, name
+
+  if (typeof args[0] === 'string') {
+    name = args[0]
+  } else if (typeof args[0] === 'function') {
+    name = args[0].name
+
+    // Function has been wrapped by us, use original function name
+    if (name === 'opbeatFunctionWrapper' && args[0].original) {
+      name = args[0].original.name
+    }
+  }
+
+  if (typeof args[1] === 'object') {
+    scope = args[1].$scope
+  }
+
+  return {
+    scope: scope,
+    name: name
+  }
+}
+
+module.exports = function ($provide, transactionService) {
   $provide.decorator('$controller', ['$delegate', '$injector', function ($delegate, $injector) {
     return function () {
       var args = Array.prototype.slice.call(arguments)
-      var controllerInfo = utils.getControllerInfoFromArgs(args)
+      var controllerInfo = getControllerInfoFromArgs(args)
 
-      if (controllerInfo.name) { // Only instrument controllers with a name
-        return utils.instrumentModule($delegate, $injector, {
-          traceBuffer: traceBuffer,
-          instrumentConstructor: true,
-          type: 'app.$controller',
-          prefix: '$controller.' + controllerInfo.name
-        }).apply(this, arguments)
+      if (controllerInfo.name) {
+        var traceName = '$controller.' + controllerInfo.name
+        var traceType = 'app.$controller'
+        var trace = transactionService.startTrace(traceName, traceType, {enableStackFrames: false})
+        var result
+
+        try {
+          result = $delegate.apply(this, arguments)
+        } finally {
+          if (!utils.isUndefined(trace)) {
+            trace.end()
+          }
+        }
+      } else {
+        result = $delegate.apply(this, arguments)
       }
 
-      return $delegate.apply(this, args)
+      return result
     }
   }])
 }
 
-},{"../instrumentation/utils":43}],28:[function(_dereq_,module,exports){
+},{"../lib/utils":47}],27:[function(_dereq_,module,exports){
 var utils = _dereq_('../lib/utils')
 module.exports = function ($provide, transactionService) {
   'use strict'
@@ -2928,7 +2866,7 @@ function humanReadableWatchExpression (fn) {
   return fn.toString()
 }
 
-},{"../lib/utils":49}],29:[function(_dereq_,module,exports){
+},{"../lib/utils":47}],28:[function(_dereq_,module,exports){
 var utils = _dereq_('../instrumentation/utils')
 
 module.exports = function ($provide, transactionService) {
@@ -2966,39 +2904,50 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{"../instrumentation/utils":43}],30:[function(_dereq_,module,exports){
-var Opbeat = _dereq_('../opbeat')
+},{"../instrumentation/utils":42}],29:[function(_dereq_,module,exports){
+var Exceptions = _dereq_('../exceptions/exceptions')
 
-function NgOpbeatProvider (logger) {
+function NgOpbeatProvider (logger, configService) {
   this.config = function config (properties) {
-    Opbeat.config(properties)
+    if (properties) {
+      configService.setConfig(properties)
+    }
     if (properties.debug === true) {
       logger.setLevel('debug', false)
     }
   }
 
-  this.install = function install () {
-    Opbeat.install()
-  }
+  this.version = 'v3.0.1'
 
-  this.version = 'v3.0.0'
+  var _exceptions = new Exceptions()
 
   this.$get = [
     function () {
       return {
         getConfig: function config () {
-          return Opbeat.config()
+          return configService
         },
-        captureException: function captureException (exception, cause) {
-          Opbeat.captureException(exception, cause)
+        captureException: function captureException (exception, options) {
+          if (!(exception instanceof Error)) {
+            logger.error("Can't capture exception. Passed exception needs to be an instanceof Error")
+            return
+          }
+
+          // TraceKit.report will re-raise any exception passed to it,
+          // which means you have to wrap it in try/catch. Instead, we
+          // can wrap it here and only re-raise if TraceKit.report
+          // raises an exception different from the one we asked to
+          // report on.
+
+          _exceptions.processError(exception, options)
         },
 
         setUserContext: function setUser (user) {
-          Opbeat.setUserContext(user)
+          configService.set('context.user', user)
         },
 
         setExtraContext: function setExtraContext (data) {
-          Opbeat.setExtraContext(data)
+          configService.set('context.extra', data)
         }
       }
     }
@@ -3030,11 +2979,16 @@ function patchAll ($provide, transactionService) {
   patchDirectives($provide, transactionService)
 }
 
-function initialize (transactionService, logger, config, zoneService) {
+function initialize (transactionService, logger, configService, zoneService) {
   function moduleRun ($rootScope) {
+    if (!configService.isPlatformSupport()) {
+      return
+    }
+    configService.set('isInstalled', true)
+
     // onRouteChangeStart
     function onRouteChangeStart (event, current) {
-      if (!config.get('performance.enable')) {
+      if (!configService.get('performance.enable')) {
         logger.debug('Performance monitoring is disable')
         return
       }
@@ -3060,11 +3014,14 @@ function initialize (transactionService, logger, config, zoneService) {
   }
 
   function moduleConfig ($provide) {
+    if (!configService.isPlatformSupport()) {
+      return
+    }
     patchAll($provide, transactionService)
   }
 
   window.angular.module('ngOpbeat', [])
-    .provider('$opbeat', new NgOpbeatProvider(logger))
+    .provider('$opbeat', new NgOpbeatProvider(logger, configService))
     .config(['$provide', moduleConfig])
     .run(['$rootScope', moduleRun])
   window.angular.module('opbeat-angular', ['ngOpbeat'])
@@ -3072,53 +3029,17 @@ function initialize (transactionService, logger, config, zoneService) {
 
 module.exports = initialize
 
-},{"../opbeat":50,"./compilePatch":26,"./controllerPatch":27,"./directivesPatch":28,"./httpPatch":29,"./rootScopePatch":32}],31:[function(_dereq_,module,exports){
-var OpbeatBackend = _dereq_('../backend/opbeat_backend')
-var transport = _dereq_('../lib/transport')
+},{"../exceptions/exceptions":37,"./compilePatch":25,"./controllerPatch":26,"./directivesPatch":27,"./httpPatch":28,"./rootScopePatch":31}],30:[function(_dereq_,module,exports){
+
 var ServiceContainer = _dereq_('./serviceContainer')
-var opbeat = _dereq_('../opbeat')
-
-var utils = _dereq_('../lib/utils')
-
 function init () {
-  var config = opbeat.config()
-  var services = new ServiceContainer(config).services
-  var logger = services.logger
-  var transactionService = services.transactionService
-
-  if (utils.isUndefined(window.opbeatApi)) {
-    window.opbeatApi = {}
-  }
-  window.opbeatApi.subscribeToTransactions = transactionService.subscribe.bind(transactionService)
-
-  var opbeatBackend = new OpbeatBackend(transport, logger, config)
-  setInterval(function () {
-    var transactions = services.transactionService.getTransactions()
-
-    if (transactions.length === 0) {
-      return
-    }
-    logger.debug('Sending Transactions to opbeat.', transactions.length)
-    // todo: if transactions are already being sent, should check
-    opbeatBackend.sendTransactions(transactions)
-    transactionService.clearTransactions()
-  }, 5000)
-
-  if (!utils.isUndefined(window.opbeatApi.onload)) {
-    var onOpbeatLoaded = window.opbeatApi.onload
-    onOpbeatLoaded.forEach(function (fn) {
-      try {
-        fn()
-      } catch (error) {
-        logger.error(error)
-      }
-    })
-  }
+  var services = new ServiceContainer().services
+  return services
 }
 
 init()
 
-},{"../backend/opbeat_backend":35,"../lib/transport":48,"../lib/utils":49,"../opbeat":50,"./serviceContainer":33}],32:[function(_dereq_,module,exports){
+},{"./serviceContainer":32}],31:[function(_dereq_,module,exports){
 module.exports = function ($provide, transactionService) {
   $provide.decorator('$rootScope', ['$delegate', '$injector', function ($delegate, $injector) {
     return decorateRootScope($delegate, transactionService)
@@ -3141,24 +3062,84 @@ function decorateRootScope ($delegate, transactionService) {
   return $delegate
 }
 
-},{}],33:[function(_dereq_,module,exports){
-var logger = _dereq_('loglevel')
+},{}],32:[function(_dereq_,module,exports){
+var Logger = _dereq_('loglevel')
 var ngOpbeat = _dereq_('./ngOpbeat')
 var TransactionService = _dereq_('../transaction/transaction_service')
-var opbeat = _dereq_('../opbeat')
+var Config = _dereq_('../lib/config')
 
-function ServiceContainer (config) {
-  this.services = { logger: logger }
+var OpbeatBackend = _dereq_('../backend/opbeat_backend')
+var transport = _dereq_('../lib/transport')
 
-  if (config.debug === true) {
-    config.logLevel = 'debug'
+var utils = _dereq_('../lib/utils')
+
+function ServiceContainer () {
+  this.services = {}
+
+  Config.init()
+  var configService = Config
+  this.services.configService = configService
+
+  var logger = this.services.logger = this.createLogger()
+
+  var zoneService = this.services.zoneService = this.createZoneService()
+
+  var transactionService = this.services.transactionService = new TransactionService(zoneService, this.services.logger, configService)
+
+  if (!configService.isPlatformSupport()) {
+    ngOpbeat(transactionService, this.services.logger, configService, zoneService)
+    this.services.logger.debug('Platform is not supported.')
+    return
   }
-  logger.setLevel(config.get('logLevel'), false)
+
+  this.createOpbeatBackend()
 
   if (typeof window.angular === 'undefined') {
     throw new Error('AngularJS is not available. Please make sure you load opbeat-angular after AngularJS.')
   }
 
+  if (utils.isUndefined(window.opbeatApi)) {
+    window.opbeatApi = {}
+  }
+  window.opbeatApi.subscribeToTransactions = transactionService.subscribe.bind(transactionService)
+
+  if (!utils.isUndefined(window.opbeatApi.onload)) {
+    var onOpbeatLoaded = window.opbeatApi.onload
+    onOpbeatLoaded.forEach(function (fn) {
+      try {
+        fn()
+      } catch (error) {
+        logger.error(error)
+      }
+    })
+  }
+
+  // binding bootstrap to zone
+
+  // window.angular.bootstrap = zoneService.zone.bind(window.angular.bootstrap)
+  var _resumeDeferred = window.angular.resumeDeferredBootstrap
+  window.name = 'NG_DEFER_BOOTSTRAP!' + window.name
+  window.angular.resumeDeferredBootstrap = zoneService.zone.bind(function () {
+    var resumeBootstrap = window.angular.resumeBootstrap
+    if (typeof _resumeDeferred === 'function') {
+      resumeBootstrap = _resumeDeferred
+    }
+    resumeBootstrap()
+  })
+
+  ngOpbeat(transactionService, logger, configService, zoneService)
+}
+
+ServiceContainer.prototype.createLogger = function () {
+  if (this.services.configService.get('debug') === true) {
+    this.services.configService.config.logLevel = 'debug'
+  }
+  Logger.setLevel(this.services.configService.get('logLevel'), false)
+  return Logger
+}
+
+ServiceContainer.prototype.createZoneService = function () {
+  var logger = this.services.logger
   // todo: remove this when updating to new version of zone.js
   function noop () { }
   var _warn = console.warn
@@ -3176,28 +3157,31 @@ function ServiceContainer (config) {
   console.warn = _warn
 
   var ZoneService = _dereq_('../transaction/zone_service')
-  var zoneService = this.services.zoneService = new ZoneService(window.zone, logger)
+  return new ZoneService(window.zone, logger)
+}
 
-  var transactionService = this.services.transactionService = new TransactionService(zoneService, logger, config)
-  // binding bootstrap to zone
+ServiceContainer.prototype.createOpbeatBackend = function () {
+  var logger = this.services.logger
 
-  // window.angular.bootstrap = zoneService.zone.bind(window.angular.bootstrap)
-  var _resumeDeferred = window.angular.resumeDeferredBootstrap
-  window.name = 'NG_DEFER_BOOTSTRAP!' + window.name
-  window.angular.resumeDeferredBootstrap = zoneService.zone.bind(function () {
-    var resumeBootstrap = window.angular.resumeBootstrap
-    if (typeof _resumeDeferred === 'function') {
-      resumeBootstrap = _resumeDeferred
+  var opbeatBackend = new OpbeatBackend(transport, this.services.logger, this.services.configService)
+  var serviceContainer = this
+
+  setInterval(function () {
+    var transactions = serviceContainer.services.transactionService.getTransactions()
+
+    if (transactions.length === 0) {
+      return
     }
-    resumeBootstrap()
-  })
-
-  ngOpbeat(transactionService, logger, opbeat.config(), zoneService)
+    logger.debug('Sending Transactions to opbeat.', transactions.length)
+    // todo: if transactions are already being sent, should check
+    opbeatBackend.sendTransactions(transactions)
+    serviceContainer.services.transactionService.clearTransactions()
+  }, 5000)
 }
 
 module.exports = ServiceContainer
 
-},{"../opbeat":50,"../transaction/transaction_service":54,"../transaction/zone_service":55,"./ngOpbeat":30,"loglevel":3,"zone.js":25}],34:[function(_dereq_,module,exports){
+},{"../backend/opbeat_backend":34,"../lib/config":43,"../lib/transport":46,"../lib/utils":47,"../transaction/transaction_service":51,"../transaction/zone_service":52,"./ngOpbeat":29,"loglevel":3,"zone.js":24}],33:[function(_dereq_,module,exports){
 module.exports = {
   createValidFrames: function createValidFrames (frames) {
     var result = []
@@ -3210,7 +3194,7 @@ module.exports = {
   }
 }
 
-},{}],35:[function(_dereq_,module,exports){
+},{}],34:[function(_dereq_,module,exports){
 var backendUtils = _dereq_('./backend_utils')
 module.exports = OpbeatBackend
 function OpbeatBackend (transport, logger, config) {
@@ -3387,7 +3371,7 @@ function traceGroupingKey (trace) {
   ].join('-')
 }
 
-},{"./backend_utils":34}],36:[function(_dereq_,module,exports){
+},{"./backend_utils":33}],35:[function(_dereq_,module,exports){
 function Subscription () {
   this.subscriptions = []
 }
@@ -3416,7 +3400,7 @@ Subscription.prototype.applyAll = function (applyTo, applyWith) {
 
 module.exports = Subscription
 
-},{}],37:[function(_dereq_,module,exports){
+},{}],36:[function(_dereq_,module,exports){
 var Promise = _dereq_('es6-promise').Promise
 var utils = _dereq_('../lib/utils')
 var fileFetcher = _dereq_('../lib/fileFetcher')
@@ -3580,7 +3564,7 @@ module.exports = {
 
 }
 
-},{"../lib/fileFetcher":46,"../lib/utils":49,"es6-promise":2}],38:[function(_dereq_,module,exports){
+},{"../lib/fileFetcher":44,"../lib/utils":47,"es6-promise":2}],37:[function(_dereq_,module,exports){
 var Promise = _dereq_('es6-promise').Promise
 var stackTrace = _dereq_('./stacktrace')
 var frames = _dereq_('./frames')
@@ -3648,7 +3632,7 @@ function processError (error, msg, file, line, col) {
 
 module.exports = Exceptions
 
-},{"./frames":39,"./stacktrace":40,"es6-promise":2}],39:[function(_dereq_,module,exports){
+},{"./frames":38,"./stacktrace":39,"es6-promise":2}],38:[function(_dereq_,module,exports){
 var Promise = _dereq_('es6-promise').Promise
 
 var logger = _dereq_('../lib/logger')
@@ -3884,7 +3868,7 @@ module.exports = {
 
 }
 
-},{"../backend/backend_utils":34,"../lib/config":45,"../lib/logger":47,"../lib/transport":48,"../lib/utils":49,"./context":37,"./stacktrace":40,"es6-promise":2}],40:[function(_dereq_,module,exports){
+},{"../backend/backend_utils":33,"../lib/config":43,"../lib/logger":45,"../lib/transport":46,"../lib/utils":47,"./context":36,"./stacktrace":39,"es6-promise":2}],39:[function(_dereq_,module,exports){
 var ErrorStackParser = _dereq_('error-stack-parser')
 var StackGenerator = _dereq_('stack-generator')
 var Promise = _dereq_('es6-promise').Promise
@@ -3992,14 +3976,14 @@ function normalizeFunctionName (fnName) {
   return fnName
 }
 
-},{"../lib/utils":49,"error-stack-parser":1,"es6-promise":2,"stack-generator":7}],41:[function(_dereq_,module,exports){
+},{"../lib/utils":47,"error-stack-parser":1,"es6-promise":2,"stack-generator":6}],40:[function(_dereq_,module,exports){
 var SimpleCache = _dereq_('simple-lru-cache')
 
 module.exports = new SimpleCache({
   'maxSize': 5000
 })
 
-},{"simple-lru-cache":5}],42:[function(_dereq_,module,exports){
+},{"simple-lru-cache":4}],41:[function(_dereq_,module,exports){
 var logger = _dereq_('../lib/logger')
 
 var TransactionStore = function () {
@@ -4052,7 +4036,7 @@ TransactionStore.prototype.clearByUrl = function (url) {
 
 module.exports = new TransactionStore()
 
-},{"../lib/logger":47}],43:[function(_dereq_,module,exports){
+},{"../lib/logger":45}],42:[function(_dereq_,module,exports){
 var logger = _dereq_('../lib/logger')
 var utils = _dereq_('../lib/utils')
 var config = _dereq_('../lib/config')
@@ -4465,46 +4449,13 @@ function getAnnotation (fn) {
   return $inject
 }
 
-},{"../lib/config":45,"../lib/logger":47,"../lib/utils":49,"./transactionStore":42}],44:[function(_dereq_,module,exports){
-var utils = _dereq_('./utils')
-
-function api (opbeat, queuedCommands) {
-  this.q = []
-
-  this.opbeat = opbeat
-  this.execute = utils.functionBind(this.execute, this)
-  this.push = utils.functionBind(this.push, this)
-
-  if (queuedCommands) {
-    for (var i = 0; i < queuedCommands.length; i++) {
-      var cmd = queuedCommands[i]
-      this.push.apply(this, cmd)
-    }
-  }
-}
-
-api.prototype.execute = function (cmd, args) {
-  return this.opbeat[cmd].apply(this.opbeat, args)
-}
-
-api.prototype.push = function () {
-  var argsArray = Array.prototype.slice.call(arguments)
-
-  var cmd = argsArray.slice(0, 1)[0]
-  var args = argsArray.slice(1)
-
-  this.execute(cmd, args)
-}
-
-module.exports = api
-
-},{"./utils":49}],45:[function(_dereq_,module,exports){
+},{"../lib/config":43,"../lib/logger":45,"../lib/utils":47,"./transactionStore":41}],43:[function(_dereq_,module,exports){
 var utils = _dereq_('./utils')
 
 function Config () {
   this.config = {}
   this.defaults = {
-    VERSION: 'v3.0.0',
+    VERSION: 'v3.0.1',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     logLevel: 'warn',
@@ -4604,9 +4555,20 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
+Config.prototype.VERSION = 'v3.0.1'
+
+Config.prototype.isPlatformSupport = function () {
+  return typeof Array.prototype.forEach === 'function' &&
+  typeof JSON.stringify === 'function' &&
+  typeof Function.bind === 'function' &&
+  window.performance &&
+  typeof window.performance.now === 'function' &&
+  utils.isCORSSupported()
+}
+
 module.exports = new Config()
 
-},{"./utils":49}],46:[function(_dereq_,module,exports){
+},{"./utils":47}],44:[function(_dereq_,module,exports){
 var SimpleCache = _dereq_('simple-lru-cache')
 var transport = _dereq_('./transport')
 
@@ -4626,7 +4588,7 @@ module.exports = {
   }
 }
 
-},{"./transport":48,"simple-lru-cache":5}],47:[function(_dereq_,module,exports){
+},{"./transport":46,"simple-lru-cache":4}],45:[function(_dereq_,module,exports){
 var config = _dereq_('./config')
 
 var logStack = []
@@ -4669,7 +4631,7 @@ module.exports = {
   }
 }
 
-},{"./config":45}],48:[function(_dereq_,module,exports){
+},{"./config":43}],46:[function(_dereq_,module,exports){
 var logger = _dereq_('./logger')
 var config = _dereq_('./config')
 var Promise = _dereq_('es6-promise').Promise
@@ -4748,7 +4710,7 @@ function _makeRequest (url, method, type, data, headers) {
   })
 }
 
-},{"./config":45,"./logger":47,"es6-promise":2}],49:[function(_dereq_,module,exports){
+},{"./config":43,"./logger":45,"es6-promise":2}],47:[function(_dereq_,module,exports){
 module.exports = {
   getViewPortInfo: function getViewPort () {
     var e = document.documentElement
@@ -4941,155 +4903,7 @@ module.exports = {
 
 }
 
-},{}],50:[function(_dereq_,module,exports){
-var logger = _dereq_('./lib/logger')
-var utils = _dereq_('./lib/utils')
-var config = _dereq_('./lib/config')
-var Exceptions = _dereq_('./exceptions/exceptions')
-var API = _dereq_('./lib/api')
-
-function Opbeat () {
-  this._config = config
-  this._config.init()
-
-  var queuedCommands = []
-  if (window._opbeat) {
-    queuedCommands = window._opbeat.q
-  }
-  this.api = new API(this, queuedCommands)
-  window._opbeat = this.api.push
-
-  this.install()
-}
-
-Opbeat.prototype.VERSION = 'v3.0.0'
-
-Opbeat.prototype.isPlatformSupport = function () {
-  return typeof Array.prototype.forEach === 'function' &&
-  typeof JSON.stringify === 'function' &&
-  typeof Function.bind === 'function' &&
-  window.performance &&
-  typeof window.performance.now === 'function' &&
-  utils.isCORSSupported()
-}
-
-/*
- * Configure Opbeat with Opbeat.com credentials and other options
- *
- * @param {object} options Optional set of of global options
- * @return {Opbeat}
- */
-Opbeat.prototype.config = function (properties) {
-  if (properties) {
-    config.setConfig(properties)
-  }
-
-  this.install()
-
-  return this._config
-}
-
-/*
- * Installs a global window.onerror error handler
- * to capture and report uncaught exceptions.
- * At this point, install() is required to be called due
- * to the way TraceKit is set up.
- *
- * @return {Opbeat}
- */
-
-Opbeat.prototype.install = function () {
-  if (!config.isValid()) {
-    logger.warning('opbeat.install.config.invalid')
-    return this
-  }
-
-  if (!this.isPlatformSupport()) {
-    logger.warning('opbeat.install.platform.unsupported')
-    return this
-  }
-
-  if (this._config.get('isInstalled')) {
-    logger.warning('opbeat.install.already.installed')
-    return this
-  }
-
-  this._exceptions = new Exceptions()
-
-  this._exceptions.install()
-  this._config.set('isInstalled', true)
-
-  return this
-}
-
-/*
- * Uninstalls the global error handler.
- *
- * @return {Opbeat}
- */
-Opbeat.prototype.uninstall = function () {
-  this._exceptions.uninstall()
-  this._config.set('isInstalled', false)
-
-  return this
-}
-
-/*
- * Manually capture an exception and send it over to Opbeat.com
- *
- * @param {error} ex An exception to be logged
- * @param {object} options A specific set of options for this error [optional]
- * @return {Opbeat}
- */
-Opbeat.prototype.captureException = function (ex, options) {
-  if (!this._config.get('isInstalled')) {
-    logger.error("Can't capture exception. Opbeat isn't intialized")
-    return this
-  }
-
-  if (!(ex instanceof Error)) {
-    logger.error("Can't capture exception. Passed exception needs to be an instanceof Error")
-    return this
-  }
-
-  // TraceKit.report will re-raise any exception passed to it,
-  // which means you have to wrap it in try/catch. Instead, we
-  // can wrap it here and only re-raise if TraceKit.report
-  // raises an exception different from the one we asked to
-  // report on.
-
-  this._exceptions.processError(ex, options)
-
-  return this
-}
-
-/*
- * Set/clear a user to be sent along with the payload.
- *
- * @param {object} user An object representing user data [optional]
- * @return {Opbeat}
- */
-Opbeat.prototype.setUserContext = function (user) {
-  config.set('context.user', user)
-
-  return this
-}
-
-/*
- * Set extra attributes to be sent along with the payload.
- *
- * @param {object} extra An object representing extra data [optional]
- * @return {Opbeat}
- */
-Opbeat.prototype.setExtraContext = function (extra) {
-  config.set('context.extra', extra)
-
-  return this
-}
-
-module.exports = new Opbeat()
-
-},{"./exceptions/exceptions":38,"./lib/api":44,"./lib/config":45,"./lib/logger":47,"./lib/utils":49}],51:[function(_dereq_,module,exports){
+},{}],48:[function(_dereq_,module,exports){
 module.exports = {
   patchFunction: function patchModule (delegate, options) {},
   _copyProperties: function _copyProperties (source, target) {
@@ -5126,10 +4940,45 @@ module.exports = {
       newArgs[i] = args[i]
     }
     return newArgs
+  },
+  opbeatSymbol: opbeatSymbol,
+  patchMethod: patchMethod
+}
+
+function opbeatSymbol (name) {
+  return '__opbeat_symbol__' + name
+}
+
+function patchMethod (target, name, patchFn) {
+  var proto = target
+  while (proto && !proto.hasOwnProperty(name)) {
+    proto = Object.getPrototypeOf(proto)
+  }
+  if (!proto && target[name]) {
+    // somehow we did not find it, but we can see it. This happens on IE for Window properties.
+    proto = target
+  }
+  var delegateName = opbeatSymbol(name)
+  var delegate
+  if (proto && !(delegate = proto[delegateName])) {
+    delegate = proto[delegateName] = proto[name]
+    proto[name] = createNamedFn(name, patchFn(delegate, delegateName, name))
+  }
+  return delegate
+}
+
+function createNamedFn (name, delegate) {
+  try {
+    return (Function('f', 'return function ' + name + '(){return f(this, arguments)}'))(delegate) // eslint-disable-line
+  } catch (e) {
+    // if we fail, we must be CSP, just return delegate.
+    return function () {
+      return delegate(this, arguments)
+    }
   }
 }
 
-},{}],52:[function(_dereq_,module,exports){
+},{}],49:[function(_dereq_,module,exports){
 var Promise = _dereq_('es6-promise').Promise
 var frames = _dereq_('../exceptions/frames')
 var traceCache = _dereq_('../instrumentation/traceCache')
@@ -5250,7 +5099,7 @@ Trace.prototype.getTraceStackFrames = function (callback) {
 
 module.exports = Trace
 
-},{"../exceptions/frames":39,"../instrumentation/traceCache":41,"../lib/utils":49,"es6-promise":2}],53:[function(_dereq_,module,exports){
+},{"../exceptions/frames":38,"../instrumentation/traceCache":40,"../lib/utils":47,"es6-promise":2}],50:[function(_dereq_,module,exports){
 var Trace = _dereq_('./trace')
 var Promise = _dereq_('es6-promise').Promise
 var utils = _dereq_('../lib/utils')
@@ -5355,7 +5204,7 @@ Transaction.prototype.addEndedTraces = function (existingTraces) {
 
 Transaction.prototype._onTraceEnd = function (trace) {
   this.traces.push(trace)
-
+  trace._scheduledTasks = Object.keys(this._scheduledTasks)
   // Remove trace from _activeTraces
   delete this._activeTraces[trace.traceId]
 }
@@ -5444,7 +5293,7 @@ function findLatestTrace (traces) {
 
 module.exports = Transaction
 
-},{"../lib/utils":49,"./trace":52,"es6-promise":2}],54:[function(_dereq_,module,exports){
+},{"../lib/utils":47,"./trace":49,"es6-promise":2}],51:[function(_dereq_,module,exports){
 var Transaction = _dereq_('./transaction')
 var utils = _dereq_('../lib/utils')
 var Subscription = _dereq_('../common/subscription')
@@ -5466,6 +5315,19 @@ function TransactionService (zoneService, logger, config) {
   this._queue = []
 
   this._subscription = new Subscription()
+
+  var transactionService = this
+  zoneService.spec.onAddTask = function (taskId) {
+    transactionService.addTask(taskId)
+  }
+
+  zoneService.spec.onRemoveTask = function (taskId) {
+    transactionService.removeTask(taskId)
+  }
+
+  zoneService.spec.onDetectFinish = function () {
+    transactionService.detectFinish()
+  }
 }
 
 TransactionService.prototype.getTransaction = function (id) {
@@ -5524,7 +5386,10 @@ TransactionService.prototype.startTrace = function (signature, type, options) {
     this._zoneService.set('transaction', tr)
     this._logger.debug('TransactionService.startTrace - ZoneTransaction', signature, type)
   }
-  return tr.startTrace(signature, type, options)
+  var trace = tr.startTrace(signature, type, options)
+  // var zone = this._zoneService.getCurrentZone()
+  // trace._zone = 'Zone(' + zone.$id + ') ' // parent(' + zone.parent.$id + ') '
+  return trace
 }
 
 // !!DEPRECATED!!
@@ -5579,8 +5444,8 @@ TransactionService.prototype.detectFinish = function () {
 
 module.exports = TransactionService
 
-},{"../common/subscription":36,"../lib/utils":49,"./transaction":53}],55:[function(_dereq_,module,exports){
-var patchUtils = _dereq_('../patchUtils')
+},{"../common/subscription":35,"../lib/utils":47,"./transaction":50}],52:[function(_dereq_,module,exports){
+var patchUtils = _dereq_('../patching/patchUtils')
 var Subscription = _dereq_('../common/subscription')
 
 var utils = _dereq_('../lib/utils')
@@ -5608,6 +5473,12 @@ function ZoneService (zone, logger) {
 
   this.events = new Subscription()
   // var zoneService = this
+  function noop () { }
+  var spec = this.spec = {
+    onAddTask: noop,
+    onRemoveTask: noop,
+    onDetectFinish: noop
+  }
 
   var zoneConfig = {
     log: function log (methodName, theRest) {
@@ -5692,19 +5563,13 @@ function ZoneService (zone, logger) {
   this.zone = zone.fork(zoneConfig)
 
   this.zone._addTransactionTask = function (taskId) {
-    if (this.transaction) {
-      this.transaction.addTask(taskId)
-    }
+    spec.onAddTask(taskId)
   }
   this.zone._removeTransactionTask = function (taskId) {
-    if (this.transaction) {
-      this.transaction.removeTask(taskId)
-    }
+    spec.onRemoveTask(taskId)
   }
   this.zone._detectFinish = function () {
-    if (this.transaction) {
-      this.transaction.detectFinish()
-    }
+    spec.onDetectFinish()
   }
 }
 
@@ -5715,6 +5580,10 @@ ZoneService.prototype.get = function (key) {
   return window.zone[key]
 }
 
+ZoneService.prototype.getCurrentZone = function () {
+  return window.zone
+}
+
 module.exports = ZoneService
 
-},{"../common/subscription":36,"../lib/utils":49,"../patchUtils":51}]},{},[31]);
+},{"../common/subscription":35,"../lib/utils":47,"../patching/patchUtils":48}]},{},[30]);
