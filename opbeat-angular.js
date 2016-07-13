@@ -1789,7 +1789,7 @@ module.exports=Cache
 	timers_1.patchTimer(_global, set, clear, 'Timeout');
 	timers_1.patchTimer(_global, set, clear, 'Interval');
 	timers_1.patchTimer(_global, set, clear, 'Immediate');
-	timers_1.patchTimer(_global, 'request', 'cancelMacroTask', 'AnimationFrame');
+	timers_1.patchTimer(_global, 'request', 'cancel', 'AnimationFrame');
 	timers_1.patchTimer(_global, 'mozRequest', 'mozCancel', 'AnimationFrame');
 	timers_1.patchTimer(_global, 'webkitRequest', 'webkitCancel', 'AnimationFrame');
 	for (var i = 0; i < blockingMethods.length; i++) {
@@ -2157,6 +2157,14 @@ module.exports=Cache
 	                }
 	            };
 	        }
+	        ZoneTask.prototype.toString = function () {
+	            if (this.data && typeof this.data.handleId !== 'undefined') {
+	                return this.data.handleId;
+	            }
+	            else {
+	                return this.toString();
+	            }
+	        };
 	        return ZoneTask;
 	    }());
 	    function __symbol__(name) { return '__zone_symbol__' + name; }
@@ -2405,7 +2413,7 @@ module.exports=Cache
 	"use strict";
 	var utils_1 = __webpack_require__(3);
 	var WTF_ISSUE_555 = 'Anchor,Area,Audio,BR,Base,BaseFont,Body,Button,Canvas,Content,DList,Directory,Div,Embed,FieldSet,Font,Form,Frame,FrameSet,HR,Head,Heading,Html,IFrame,Image,Input,Keygen,LI,Label,Legend,Link,Map,Marquee,Media,Menu,Meta,Meter,Mod,OList,Object,OptGroup,Option,Output,Paragraph,Pre,Progress,Quote,Script,Select,Source,Span,Style,TableCaption,TableCell,TableCol,Table,TableRow,TableSection,TextArea,Title,Track,UList,Unknown,Video';
-	var NO_EVENT_TARGET = 'ApplicationCache,EventSource,FileReader,InputMethodContext,MediaController,MessagePort,Node,Performance,SVGElementInstance,SharedWorker,TextTrack,TextTrackCue,TextTrackList,WebKitNamedFlow,Worker,WorkerGlobalScope,XMLHttpRequest,XMLHttpRequestEventTarget,XMLHttpRequestUpload,IDBRequest,IDBOpenDBRequest,IDBDatabase,IDBTransaction,IDBCursor,DBIndex'.split(',');
+	var NO_EVENT_TARGET = 'ApplicationCache,EventSource,FileReader,InputMethodContext,MediaController,MessagePort,Node,Performance,SVGElementInstance,SharedWorker,TextTrack,TextTrackCue,TextTrackList,WebKitNamedFlow,Window,Worker,WorkerGlobalScope,XMLHttpRequest,XMLHttpRequestEventTarget,XMLHttpRequestUpload,IDBRequest,IDBOpenDBRequest,IDBDatabase,IDBTransaction,IDBCursor,DBIndex'.split(',');
 	var EVENT_TARGET = 'EventTarget';
 	function eventTargetPatch(_global) {
 	    var apis = [];
@@ -2676,6 +2684,9 @@ module.exports=Cache
 	    var instance = new OriginalClass(function () { });
 	    var prop;
 	    for (prop in instance) {
+	        // https://bugs.webkit.org/show_bug.cgi?id=44721
+	        if (className === 'XMLHttpRequest' && prop === 'responseBlob')
+	            continue;
 	        (function (prop) {
 	            if (typeof instance[prop] === 'function') {
 	                _global[className].prototype[prop] = function () {
@@ -2771,7 +2782,7 @@ module.exports=Cache
 	        return obj;
 	    };
 	    Object.create = function (obj, proto) {
-	        if (typeof proto === 'object') {
+	        if (typeof proto === 'object' && !Object.isFrozen(proto)) {
 	            Object.keys(proto).forEach(function (prop) {
 	                proto[prop] = rewriteDescriptor(obj, prop, proto[prop]);
 	            });
@@ -3017,7 +3028,17 @@ module.exports=Cache
 	                delay: (nameSuffix === 'Timeout' || nameSuffix === 'Interval') ? args[1] || 0 : null,
 	                args: args
 	            };
-	            return zone.scheduleMacroTask(setName, args[0], options, scheduleTask, clearTask);
+	            var task = zone.scheduleMacroTask(setName, args[0], options, scheduleTask, clearTask);
+	            if (!task) {
+	                return task;
+	            }
+	            // Node.js must additionally support the ref and unref functions.
+	            var handle = task.data.handleId;
+	            if (handle.ref && handle.unref) {
+	                task.ref = handle.ref.bind(handle);
+	                task.unref = handle.unref.bind(handle);
+	            }
+	            return task;
 	        }
 	        else {
 	            // cause an error by calling it directly.
@@ -3202,7 +3223,7 @@ function NgOpbeatProvider (logger, configService) {
     }
   }
 
-  this.version = 'v3.1.0'
+  this.version = 'v3.1.1'
 
   this.install = function install () {
     logger.warn('$opbeatProvider.install is deprecated!')
@@ -3518,8 +3539,53 @@ OpbeatBackend.prototype.sendError = function (errorData) {
   this._transport.sendError(errorData)
 }
 
+OpbeatBackend.prototype.groupSmallContinuouslySimilarTraces = function (transaction) {
+  var transDuration = transaction.duration()
+  var traces = []
+  var lastCount = 1
+  var threshold = 0.05
+  transaction.traces.sort(function (traceA, traceB) {
+    return traceA._start - traceB._start
+  })
+    .forEach(function (trace, index) {
+      if (traces.length === 0) {
+        traces.push(trace)
+      } else {
+        var lastTrace = traces[traces.length - 1]
+
+        var isContinuouslySimilar = lastTrace.type === trace.type &&
+          lastTrace.signature === trace.signature &&
+          trace.duration() / transDuration < threshold &&
+          (trace._start - lastTrace._end) / transDuration < threshold
+
+        var isLastTrace = transaction.traces.length === index + 1
+
+        if (isContinuouslySimilar) {
+          lastCount++
+          lastTrace._end = trace._end
+          lastTrace.calcDiff()
+        }
+
+        if (lastCount > 1 && (!isContinuouslySimilar || isLastTrace)) {
+          lastTrace.signature = lastCount + 'x ' + lastTrace.signature
+          lastCount = 1
+        }
+
+        if (!isContinuouslySimilar && !isLastTrace) {
+          traces.push(trace)
+        }
+      }
+    })
+  transaction.traces = traces
+  return traces
+}
+
 OpbeatBackend.prototype.sendTransactions = function (transactionList) {
   if (this._config.isValid()) {
+    if (this._config.get('performance.groupSimilarTraces')) {
+      transactionList.forEach(this.groupSmallContinuouslySimilarTraces)
+    }
+
     var formatedTransactions = this._formatTransactions(transactionList)
     return this._transport.sendTransaction(formatedTransactions)
   } else {
@@ -4300,7 +4366,7 @@ var utils = _dereq_('./utils')
 function Config () {
   this.config = {}
   this.defaults = {
-    VERSION: 'v3.1.0',
+    VERSION: 'v3.1.1',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     logLevel: 'warn',
@@ -4309,7 +4375,8 @@ function Config () {
     angularAppName: null,
     performance: {
       enable: true,
-      enableStackFrames: false
+      enableStackFrames: false,
+      groupSimilarTraces: false
     },
     libraryPathPattern: '(node_modules|bower_components|webpack)',
     context: {
@@ -4400,7 +4467,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.1.0'
+Config.prototype.VERSION = 'v3.1.1'
 
 Config.prototype.isPlatformSupport = function () {
   return typeof Array.prototype.forEach === 'function' &&
@@ -5449,6 +5516,7 @@ function ZoneService (zone, logger, config) {
           spec.onInvokeTask(opbeatTask)
         }
       } else if (task[opbeatTaskSymbol] && (task.source === 'requestAnimationFrame' || task.source === 'setTimeout')) {
+        spec.onBeforeInvokeTask(task[opbeatTaskSymbol])
         result = parentZoneDelegate.invokeTask(targetZone, task, applyThis, applyArgs)
         spec.onInvokeTask(task[opbeatTaskSymbol])
       } else {
