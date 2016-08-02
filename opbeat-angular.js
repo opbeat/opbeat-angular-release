@@ -3213,7 +3213,7 @@ function NgOpbeatProvider (logger, configService, exceptionHandler) {
     }
   }
 
-  this.version = 'v3.1.2'
+  this.version = configService.get('VERSION')
 
   this.install = function install () {
     logger.warn('$opbeatProvider.install is deprecated!')
@@ -3281,6 +3281,9 @@ function initialize (transactionService, logger, configService, zoneService, exc
       return
     }
     configService.set('isInstalled', true)
+    configService.set('opbeatAgentName', 'opbeat-angular')
+
+    logger.debug('Agent:', configService.getAgentName())
 
     // onRouteChangeStart
     function onRouteChangeStart (event, current) {
@@ -3548,12 +3551,25 @@ OpbeatBackend.prototype.groupSmallContinuouslySimilarTraces = function (transact
           lastCount = 1
         }
 
-        if (!isContinuouslySimilar && !isLastTrace) {
+        if (!isContinuouslySimilar) {
           traces.push(trace)
         }
       }
     })
   return traces
+}
+
+OpbeatBackend.prototype.checkBrowserResponsiveness = function (transaction, interval, buffer) {
+  var counter = transaction.browserResponsivenessCounter
+  if (typeof interval === 'undefined' || typeof counter === 'undefined') {
+    return true
+  }
+
+  var duration = transaction._rootTrace.duration()
+  var expectedCount = Math.floor(duration / interval)
+  var wasBrowserResponsive = counter + buffer >= expectedCount
+
+  return wasBrowserResponsive
 }
 
 OpbeatBackend.prototype.sendTransactions = function (transactionList) {
@@ -3570,10 +3586,26 @@ OpbeatBackend.prototype.sendTransactions = function (transactionList) {
       }
     })
     var filterTransactions = transactionList.filter(function (tr) {
-      return !tr.isUseless
+      var checkBrowserResponsiveness = opbeatBackend._config.get('performance.checkBrowserResponsiveness')
+
+      if (checkBrowserResponsiveness) {
+        var interval = opbeatBackend._config.get('performance.browserResponsivenessInterval')
+        var buffer = opbeatBackend._config.get('performance.browserResponsivenessBuffer')
+
+        var duration = tr._rootTrace.duration()
+        var wasBrowserResponsive = opbeatBackend.checkBrowserResponsiveness(tr, interval, buffer)
+        if (!wasBrowserResponsive) {
+          opbeatBackend._logger.debug('Transaction was discarded! browser was not responsive enough during the transaction.', ' duration:', duration, ' browserResponsivenessCounter:', tr.browserResponsivenessCounter, 'interval:', interval)
+          return false
+        }
+      }
+      return true
     })
-    var formatedTransactions = this._formatTransactions(filterTransactions)
-    return this._transport.sendTransaction(formatedTransactions)
+
+    if (filterTransactions.length > 0) {
+      var formatedTransactions = this._formatTransactions(filterTransactions)
+      return this._transport.sendTransaction(formatedTransactions)
+    }
   } else {
     this._logger.debug('Config is not valid')
   }
@@ -3796,7 +3828,9 @@ ServiceFactory.prototype.getConfigService = function () {
 
 ServiceFactory.prototype.getExceptionHandler = function () {
   if (utils.isUndefined(this.services['ExceptionHandler'])) {
-    var exceptionHandler = new ExceptionHandler(this.getOpbeatBackend())
+    var logger = this.getLogger()
+    var configService = this.getConfigService()
+    var exceptionHandler = new ExceptionHandler(this.getOpbeatBackend(), configService, logger)
     this.services['ExceptionHandler'] = exceptionHandler
   }
   return this.services['ExceptionHandler']
@@ -4002,8 +4036,10 @@ var Promise = _dereq_('es6-promise').Promise
 var stackTrace = _dereq_('./stacktrace')
 var frames = _dereq_('./frames')
 
-var ExceptionHandler = function (opbeatBackend) {
+var ExceptionHandler = function (opbeatBackend, config, logger) {
   this._opbeatBackend = opbeatBackend
+  this._config = config
+  this._logger = logger
 }
 
 ExceptionHandler.prototype.install = function () {
@@ -4059,10 +4095,12 @@ ExceptionHandler.prototype._processError = function processError (error, msg, fi
   return resolveStackFrames.then(function (stackFrames) {
     exception.stack = stackFrames || []
     return frames.stackInfoToOpbeatException(exception).then(function (exception) {
-      var data = frames.processOpbeatException(exception)
+      var data = frames.processOpbeatException(exception, exceptionHandler._config.get('context.user'), exceptionHandler._config.get('context.extra'))
       exceptionHandler._opbeatBackend.sendError(data)
     })
-  })['catch'](function () {})
+  })['catch'](function (error) {
+    exceptionHandler._logger.debug(error)
+  })
 }
 
 module.exports = ExceptionHandler
@@ -4174,7 +4212,7 @@ module.exports = {
     }.bind(this))
   },
 
-  processOpbeatException: function (exception) {
+  processOpbeatException: function (exception, userContext, extraContext) {
     var type = exception.type
     var message = String(exception.message) || 'Script error'
     var filePath = this.cleanFilePath(exception.fileurl)
@@ -4224,7 +4262,7 @@ module.exports = {
         url: window.location.href
       },
       stacktrace: stacktrace,
-      user: config.get('context.user'),
+      user: userContext,
       level: null,
       logger: null,
       machine: null
@@ -4232,8 +4270,8 @@ module.exports = {
 
     data.extra = this.getBrowserSpecificMetadata()
 
-    if (config.get('context.extra')) {
-      data.extra = utils.mergeObject(data.extra, config.get('context.extra'))
+    if (extraContext) {
+      data.extra = utils.mergeObject(data.extra, extraContext)
     }
 
     logger.log('opbeat.exceptions.processOpbeatException', data)
@@ -4415,7 +4453,8 @@ var Subscription = _dereq_('../common/subscription')
 function Config () {
   this.config = {}
   this.defaults = {
-    VERSION: 'v3.1.2',
+    opbeatAgentName: 'opbeat-js',
+    VERSION: 'v3.1.3',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -4424,9 +4463,12 @@ function Config () {
     appId: null,
     angularAppName: null,
     performance: {
+      browserResponsivenessInterval: 500,
+      browserResponsivenessBuffer: 3,
+      checkBrowserResponsiveness: true,
       enable: true,
       enableStackFrames: false,
-      groupSimilarTraces: false,
+      groupSimilarTraces: true,
       similarTraceThreshold: 0.05
     },
     libraryPathPattern: '(node_modules|bower_components|webpack)',
@@ -4467,6 +4509,14 @@ Config.prototype.set = function (key, value) {
       target = obj
     }
   })
+}
+
+Config.prototype.getAgentName = function () {
+  var version = this.config['VERSION']
+  if (!version || version.indexOf('%%VERSION') >= 0) {
+    version = 'dev'
+  }
+  return this.get('opbeatAgentName') + '/' + version
 }
 
 Config.prototype.setConfig = function (properties) {
@@ -4519,7 +4569,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.1.2'
+Config.prototype.VERSION = 'v3.1.3'
 
 Config.prototype.isPlatformSupport = function () {
   return typeof Array.prototype.forEach === 'function' &&
@@ -4620,7 +4670,7 @@ function _sendToOpbeat (endpoint, data) {
   var url = 'https://' + config.get('apiHost') + '/api/v1/organizations/' + config.get('orgId') + '/apps/' + config.get('appId') + '/client-side/' + endpoint + '/'
 
   var headers = {
-    'X-Opbeat-Client': 'opbeat-js/' + config.get('VERSION')
+    'X-Opbeat-Client': config.getAgentName()
   }
 
   return _makeRequest(url, 'POST', 'JSON', data, headers)
@@ -5177,6 +5227,8 @@ var Transaction = function (name, type, options) {
 
   this.duration = this._rootTrace.duration.bind(this._rootTrace)
   this.nextId = 0
+
+  this.loadCounter = 0
 }
 
 Transaction.prototype.startTrace = function (signature, type, options) {
@@ -5390,7 +5442,32 @@ TransactionService.prototype.getTransaction = function (id) {
   return this.transactions[id]
 }
 
-TransactionService.prototype.createTransaction = function (name, type) {}
+TransactionService.prototype.createTransaction = function (name, type, options) {
+  var tr = new Transaction(name, type, options)
+  this._zoneService.set('transaction', tr)
+  if (this._config.get('performance.checkBrowserResponsiveness')) {
+    this.startCounter(tr)
+  }
+  return tr
+}
+
+TransactionService.prototype.startCounter = function (transaction) {
+  transaction.browserResponsivenessCounter = 0
+  var interval = this._config.get('performance.browserResponsivenessInterval')
+  if (typeof interval === 'undefined') {
+    this._logger.debug('browserResponsivenessInterval is undefined!')
+    return
+  }
+  this._zoneService.runOuter(function () {
+    var id = setInterval(function () {
+      if (transaction.ended) {
+        window.clearInterval(id)
+      } else {
+        transaction.browserResponsivenessCounter++
+      }
+    }, interval)
+  })
+}
 
 TransactionService.prototype.startTransaction = function (name, type) {
   var self = this
@@ -5402,8 +5479,7 @@ TransactionService.prototype.startTransaction = function (name, type) {
 
   var tr = this._zoneService.get('transaction')
   if (typeof tr === 'undefined' || tr.ended) {
-    tr = new Transaction(name, type, perfOptions)
-    this._zoneService.set('transaction', tr)
+    tr = this.createTransaction(name, type, perfOptions)
   } else {
     tr.name = name
     tr.type = type
@@ -5438,8 +5514,7 @@ TransactionService.prototype.startTrace = function (signature, type, options) {
   if (!utils.isUndefined(tr) && !tr.ended) {
     this._logger.debug('TransactionService.startTrace', signature, type)
   } else {
-    tr = new Transaction('ZoneTransaction', 'transaction', perfOptions)
-    this._zoneService.set('transaction', tr)
+    tr = this.createTransaction('ZoneTransaction', 'transaction', perfOptions)
     this._logger.debug('TransactionService.startTrace - ZoneTransaction', signature, type)
   }
   var trace = tr.startTrace(signature, type, options)
@@ -5532,7 +5607,7 @@ function ZoneService (zone, logger, config) {
   var zoneConfig = {
     name: 'opbeatRootZone',
     onScheduleTask: function (parentZoneDelegate, currentZone, targetZone, task) {
-      if (task.type === 'eventTask' && task.data.eventName === 'dummyImmediateEvent') {
+      if (task.type === 'eventTask' && task.data.eventName === 'opbeatImmediatelyFiringEvent') {
         task.data.handler(task.data)
         return task
       }
@@ -5578,9 +5653,11 @@ function ZoneService (zone, logger, config) {
 
           // target for event tasks is different instance from the XMLHttpRequest, on mobile browsers
           // A hack to get the correct target for event tasks
-          task.data.target.addEventListener('dummyImmediateEvent', function (event) {
+          task.data.target.addEventListener('opbeatImmediatelyFiringEvent', function (event) {
             if (typeof event.target[opbeatDataSymbol] !== 'undefined') {
               task.data.target[opbeatDataSymbol] = event.target[opbeatDataSymbol]
+            } else {
+              task.data.target[opbeatDataSymbol] = event.target[opbeatDataSymbol] = {registeredEventListeners: {}}
             }
           })
 
@@ -5616,7 +5693,7 @@ function ZoneService (zone, logger, config) {
         }
 
         result = parentZoneDelegate.invokeTask(targetZone, task, applyThis, applyArgs)
-        if (opbeatTask && (!opbeatData.registeredEventListeners['load'] || opbeatData.registeredEventListeners['load'].resolved) && opbeatData.registeredEventListeners['readystatechange'].resolved && opbeatTask.XHR.resolved) {
+        if (opbeatTask && (!opbeatData.registeredEventListeners['load'] || opbeatData.registeredEventListeners['load'].resolved) && (!opbeatData.registeredEventListeners['readystatechange'] || opbeatData.registeredEventListeners['readystatechange'].resolved) && opbeatTask.XHR.resolved) {
           spec.onInvokeTask(opbeatTask)
         }
       } else if (task[opbeatTaskSymbol] && (task.source === 'requestAnimationFrame' || task.source === 'setTimeout')) {
