@@ -3066,8 +3066,220 @@ module.exports=Cache
 /******/ ]);
 }).call(this,undefined)
 },{}],9:[function(_dereq_,module,exports){
-var patchUtils = _dereq_('../patching/patchUtils')
-var utils = _dereq_('../lib/utils')
+var ngOpbeat = _dereq_('./ngOpbeat')
+var patchAngularBootstrap = _dereq_('./patches/bootstrapPatch')
+var patchCommon = _dereq_('../common/patchCommon')
+
+function initialize (serviceContainer, isAngularSupported) {
+  var services = serviceContainer.services
+  if (typeof window.angular === 'undefined') {
+    throw new Error('AngularJS is not available. Please make sure you load opbeat-angular after AngularJS.')
+  } else if (!services.configService.isPlatformSupported()) {
+    registerOpbeatModule(services, isAngularSupported)
+    services.logger.warn('Platform is not supported.')
+  } else if (!isAngularSupported()) {
+    registerOpbeatModule(services, isAngularSupported)
+    services.logger.warn('AngularJS version is not supported.')
+  } else {
+    patchCommon(serviceContainer)
+    patchAngularBootstrap(services.zoneService)
+    registerOpbeatModule(services, isAngularSupported)
+  }
+}
+
+function registerOpbeatModule (services, isAngularSupported) {
+  ngOpbeat(services.transactionService, services.logger, services.configService, isAngularSupported, services.exceptionHandler)
+}
+
+module.exports = initialize
+
+},{"../common/patchCommon":21,"./ngOpbeat":11,"./patches/bootstrapPatch":13}],10:[function(_dereq_,module,exports){
+
+module.exports = function isAngularSupported () {
+  var angular = window.angular
+  return (angular.version && angular.version.major >= 1 && (angular.version.minor > 3 || angular.version.minor === 3 && angular.version.dot >= 12))
+}
+
+
+},{}],11:[function(_dereq_,module,exports){
+var patchController = _dereq_('./patches/controllerPatch')
+var patchCompile = _dereq_('./patches/compilePatch')
+var patchRootScope = _dereq_('./patches/rootScopePatch')
+var patchDirectives = _dereq_('./patches/directivesPatch')
+var patchExceptionHandler = _dereq_('./patches/exceptionHandlerPatch')
+
+function NgOpbeatProvider (logger, configService, exceptionHandler) {
+  this.config = function config (properties) {
+    if (properties) {
+      configService.setConfig(properties)
+    }
+  }
+
+  this.version = configService.get('VERSION')
+
+  this.install = function install () {
+    logger.warn('$opbeatProvider.install is deprecated!')
+  }
+
+  this.$get = [
+    function () {
+      return {
+        getConfig: function config () {
+          return configService
+        },
+        captureException: function captureException (exception, options) {
+          if (!(exception instanceof Error)) {
+            logger.warn("Can't capture exception. Passed exception needs to be an instanceof Error")
+            return
+          }
+
+          // TraceKit.report will re-raise any exception passed to it,
+          // which means you have to wrap it in try/catch. Instead, we
+          // can wrap it here and only re-raise if TraceKit.report
+          // raises an exception different from the one we asked to
+          // report on.
+
+          exceptionHandler.processError(exception, options)
+        },
+
+        setUserContext: function setUser (user) {
+          configService.set('context.user', user)
+        },
+
+        setExtraContext: function setExtraContext (data) {
+          configService.set('context.extra', data)
+        }
+      }
+    }
+  ]
+}
+
+function patchAll ($provide, transactionService) {
+  patchExceptionHandler($provide)
+  patchController($provide, transactionService)
+  patchCompile($provide, transactionService)
+  patchRootScope($provide, transactionService)
+  patchDirectives($provide, transactionService)
+}
+
+function noop () {}
+
+function registerOpbeatModule (transactionService, logger, configService, isAngularSupported, exceptionHandler) {
+  function moduleRun ($rootScope) {
+    configService.set('isInstalled', true)
+    configService.set('opbeatAgentName', 'opbeat-angular')
+
+    logger.debug('Agent:', configService.getAgentName())
+
+    // onRouteChangeStart
+    function onRouteChangeStart (event, current) {
+      if (!configService.get('performance.enable')) {
+        logger.debug('Performance monitoring is disable')
+        return
+      }
+      logger.debug('Route change started')
+      var transactionName
+      if (current.$$route) { // ngRoute
+        transactionName = current.$$route.originalPath
+      } else { // UI Router
+        transactionName = current.name
+      }
+      if (transactionName === '' || typeof transactionName === 'undefined') {
+        transactionName = '/'
+      }
+
+      transactionService.startTransaction(transactionName, 'transaction')
+    }
+
+    // ng-router
+    $rootScope.$on('$routeChangeStart', onRouteChangeStart)
+
+    // ui-router
+    $rootScope.$on('$stateChangeStart', onRouteChangeStart)
+  }
+
+  function moduleConfig ($provide) {
+    patchAll($provide, transactionService)
+  }
+
+  if (!configService.isPlatformSupported() || !isAngularSupported()) {
+    window.angular.module('ngOpbeat', [])
+      .provider('$opbeat', new NgOpbeatProvider(logger, configService, exceptionHandler))
+      .config(['$provide', noop])
+      .run(['$rootScope', noop])
+  } else {
+    window.angular.module('ngOpbeat', [])
+      .provider('$opbeat', new NgOpbeatProvider(logger, configService, exceptionHandler))
+      .config(['$provide', moduleConfig])
+      .run(['$rootScope', moduleRun])
+  }
+  window.angular.module('opbeat-angular', ['ngOpbeat'])
+}
+
+module.exports = registerOpbeatModule
+
+},{"./patches/compilePatch":14,"./patches/controllerPatch":15,"./patches/directivesPatch":16,"./patches/exceptionHandlerPatch":17,"./patches/rootScopePatch":18}],12:[function(_dereq_,module,exports){
+var ServiceContainer = _dereq_('../common/serviceContainer')
+var ServiceFactory = _dereq_('../common/serviceFactory')
+var isAngularSupported = _dereq_('./isAngularSupported')
+var angularInitializer = _dereq_('./angularInitializer')
+
+function init () {
+  var serviceFactory = new ServiceFactory()
+  var serviceContainer = new ServiceContainer(serviceFactory)
+
+  angularInitializer(serviceContainer, isAngularSupported)
+}
+
+init()
+
+},{"../common/serviceContainer":24,"../common/serviceFactory":25,"./angularInitializer":9,"./isAngularSupported":10}],13:[function(_dereq_,module,exports){
+
+function patchAngularBootstrap (zoneService) {
+  var DEFER_LABEL = 'NG_DEFER_BOOTSTRAP!'
+
+  var deferRegex = new RegExp('^' + DEFER_LABEL + '.*')
+  // If the bootstrap is already deferred. (like run by Protractor)
+  // In this case `resumeBootstrap` should be patched
+  if (deferRegex.test(window.name)) {
+    var originalResumeBootstrap
+    Object.defineProperty(window.angular, 'resumeBootstrap', {
+      get: function () {
+        return function (modules) {
+          return zoneService.zone.run(function () {
+            return originalResumeBootstrap.call(window.angular, modules)
+          })
+        }
+      },
+      set: function (resumeBootstrap) {
+        originalResumeBootstrap = resumeBootstrap
+      }
+    })
+  } else { // If this is not a test, defer bootstrapping
+    window.name = DEFER_LABEL + window.name
+
+    window.angular.resumeDeferredBootstrap = function () {
+      return zoneService.zone.run(function () {
+        var resumeBootstrap = window.angular.resumeBootstrap
+        return resumeBootstrap.call(window.angular)
+      })
+    }
+
+    /* angular should remove DEFER_LABEL from window.name, but if angular is never loaded, we want
+     to remove it ourselves */
+    window.addEventListener('beforeunload', function () {
+      if (deferRegex.test(window.name)) {
+        window.name = window.name.substring(DEFER_LABEL.length)
+      }
+    })
+  }
+}
+
+module.exports = patchAngularBootstrap
+
+},{}],14:[function(_dereq_,module,exports){
+var patchUtils = _dereq_('../../common/patchUtils')
+var utils = _dereq_('../../lib/utils')
 module.exports = function ($provide, transactionService) {
   $provide.decorator('$compile', ['$delegate', '$injector', function ($delegate, $injector) {
     var nameParts = ['$compile', 'compile']
@@ -3093,8 +3305,8 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{"../lib/utils":28,"../patching/patchUtils":29}],10:[function(_dereq_,module,exports){
-var utils = _dereq_('../lib/utils')
+},{"../../common/patchUtils":22,"../../lib/utils":35}],15:[function(_dereq_,module,exports){
+var utils = _dereq_('../../lib/utils')
 
 function getControllerInfoFromArgs (args) {
   var scope, name
@@ -3143,8 +3355,8 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{"../lib/utils":28}],11:[function(_dereq_,module,exports){
-var utils = _dereq_('../lib/utils')
+},{"../../lib/utils":35}],16:[function(_dereq_,module,exports){
+var utils = _dereq_('../../lib/utils')
 module.exports = function ($provide, transactionService) {
   'use strict'
   $provide.decorator('ngRepeatDirective', ['$delegate', '$injector', function ($delegate, $injector) {
@@ -3205,54 +3417,9 @@ function humanReadableWatchExpression (fn) {
   return fn.toString()
 }
 
-},{"../lib/utils":28}],12:[function(_dereq_,module,exports){
-function NgOpbeatProvider (logger, configService, exceptionHandler) {
-  this.config = function config (properties) {
-    if (properties) {
-      configService.setConfig(properties)
-    }
-  }
+},{"../../lib/utils":35}],17:[function(_dereq_,module,exports){
 
-  this.version = configService.get('VERSION')
-
-  this.install = function install () {
-    logger.warn('$opbeatProvider.install is deprecated!')
-  }
-
-  this.$get = [
-    function () {
-      return {
-        getConfig: function config () {
-          return configService
-        },
-        captureException: function captureException (exception, options) {
-          if (!(exception instanceof Error)) {
-            logger.warn("Can't capture exception. Passed exception needs to be an instanceof Error")
-            return
-          }
-
-          // TraceKit.report will re-raise any exception passed to it,
-          // which means you have to wrap it in try/catch. Instead, we
-          // can wrap it here and only re-raise if TraceKit.report
-          // raises an exception different from the one we asked to
-          // report on.
-
-          exceptionHandler.processError(exception, options)
-        },
-
-        setUserContext: function setUser (user) {
-          configService.set('context.user', user)
-        },
-
-        setExtraContext: function setExtraContext (data) {
-          configService.set('context.extra', data)
-        }
-      }
-    }
-  ]
-}
-
-function patchExceptionHandler ($provide) {
+module.exports = function patchExceptionHandler ($provide) {
   $provide.decorator('$exceptionHandler', ['$delegate', '$opbeat', function $ExceptionHandlerDecorator ($delegate, $opbeat) {
     return function $ExceptionHandler (exception, cause) {
       $opbeat.captureException(exception)
@@ -3261,85 +3428,7 @@ function patchExceptionHandler ($provide) {
   }])
 }
 
-var patchController = _dereq_('./controllerPatch')
-var patchCompile = _dereq_('./compilePatch')
-var patchRootScope = _dereq_('./rootScopePatch')
-
-function patchAll ($provide, transactionService) {
-  patchExceptionHandler($provide)
-  patchController($provide, transactionService)
-  patchCompile($provide, transactionService)
-  patchRootScope($provide, transactionService)
-
-  var patchDirectives = _dereq_('./directivesPatch')
-  patchDirectives($provide, transactionService)
-}
-
-function initialize (transactionService, logger, configService, zoneService, exceptionHandler) {
-  function moduleRun ($rootScope) {
-    if (!configService.isPlatformSupport()) {
-      return
-    }
-    configService.set('isInstalled', true)
-    configService.set('opbeatAgentName', 'opbeat-angular')
-
-    logger.debug('Agent:', configService.getAgentName())
-
-    // onRouteChangeStart
-    function onRouteChangeStart (event, current) {
-      if (!configService.get('performance.enable')) {
-        logger.debug('Performance monitoring is disable')
-        return
-      }
-      logger.debug('Route change started')
-      var transactionName
-      if (current.$$route) { // ngRoute
-        transactionName = current.$$route.originalPath
-      } else { // UI Router
-        transactionName = current.name
-      }
-      if (transactionName === '' || typeof transactionName === 'undefined') {
-        transactionName = '/'
-      }
-
-      transactionService.startTransaction(transactionName, 'transaction')
-    }
-
-    // ng-router
-    $rootScope.$on('$routeChangeStart', onRouteChangeStart)
-
-    // ui-router
-    $rootScope.$on('$stateChangeStart', onRouteChangeStart)
-  }
-
-  function moduleConfig ($provide) {
-    if (!configService.isPlatformSupport()) {
-      return
-    }
-    patchAll($provide, transactionService)
-  }
-
-  window.angular.module('ngOpbeat', [])
-    .provider('$opbeat', new NgOpbeatProvider(logger, configService, exceptionHandler))
-    .config(['$provide', moduleConfig])
-    .run(['$rootScope', moduleRun])
-  window.angular.module('opbeat-angular', ['ngOpbeat'])
-}
-
-module.exports = initialize
-
-},{"./compilePatch":9,"./controllerPatch":10,"./directivesPatch":11,"./rootScopePatch":14}],13:[function(_dereq_,module,exports){
-var ServiceContainer = _dereq_('./serviceContainer')
-var ServiceFactory = _dereq_('../common/serviceFactory')
-function init () {
-  var serviceFactory = new ServiceFactory()
-  var services = new ServiceContainer(serviceFactory).services
-  return services
-}
-
-init()
-
-},{"../common/serviceFactory":18,"./serviceContainer":15}],14:[function(_dereq_,module,exports){
+},{}],18:[function(_dereq_,module,exports){
 module.exports = function ($provide, transactionService) {
   $provide.decorator('$rootScope', ['$delegate', '$injector', function ($delegate, $injector) {
     return decorateRootScope($delegate, transactionService)
@@ -3362,137 +3451,7 @@ function decorateRootScope ($delegate, transactionService) {
   return $delegate
 }
 
-},{}],15:[function(_dereq_,module,exports){
-var ngOpbeat = _dereq_('./ngOpbeat')
-var TransactionService = _dereq_('../transaction/transaction_service')
-
-var utils = _dereq_('../lib/utils')
-
-var PatchingService = _dereq_('../patching/patchingService')
-
-function ServiceContainer (serviceFactory) {
-  this.serviceFactory = serviceFactory
-  this.services = {}
-
-  var configService = this.services.configService = this.serviceFactory.getConfigService()
-
-  var logger = this.services.logger = this.serviceFactory.getLogger()
-  var patchingService = new PatchingService()
-  patchingService.patchAll()
-
-  var zoneService = this.services.zoneService = this.createZoneService()
-
-  var transactionService = this.services.transactionService = new TransactionService(zoneService, this.services.logger, configService)
-
-  if (!configService.isPlatformSupport()) {
-    ngOpbeat(transactionService, this.services.logger, configService, zoneService)
-    this.services.logger.debug('Platform is not supported.')
-    return
-  }
-
-  this.scheduleTransactionSend()
-
-  if (typeof window.angular === 'undefined') {
-    throw new Error('AngularJS is not available. Please make sure you load opbeat-angular after AngularJS.')
-  }
-
-  if (utils.isUndefined(window.opbeatApi)) {
-    window.opbeatApi = {}
-  }
-  window.opbeatApi.subscribeToTransactions = transactionService.subscribe.bind(transactionService)
-
-  if (!utils.isUndefined(window.opbeatApi.onload)) {
-    var onOpbeatLoaded = window.opbeatApi.onload
-    onOpbeatLoaded.forEach(function (fn) {
-      try {
-        fn()
-      } catch (error) {
-        logger.error(error)
-      }
-    })
-  }
-
-  this.patchAngularBootstrap()
-
-  this.services.exceptionHandler = this.serviceFactory.getExceptionHandler()
-  ngOpbeat(transactionService, logger, configService, zoneService, this.services.exceptionHandler)
-}
-
-ServiceContainer.prototype.createZoneService = function () {
-  var logger = this.services.logger
-
-  if (typeof window.Zone === 'undefined') {
-    _dereq_('zone.js')
-  }
-
-  var ZoneService = _dereq_('../transaction/zone_service')
-  return new ZoneService(window.Zone.current, logger, this.services.configService)
-}
-
-ServiceContainer.prototype.scheduleTransactionSend = function () {
-  var logger = this.services.logger
-
-  var opbeatBackend = this.serviceFactory.getOpbeatBackend()
-  var serviceContainer = this
-
-  setInterval(function () {
-    var transactions = serviceContainer.services.transactionService.getTransactions()
-
-    if (transactions.length === 0) {
-      return
-    }
-    logger.debug('Sending Transactions to opbeat.', transactions.length)
-    // todo: if transactions are already being sent, should check
-    opbeatBackend.sendTransactions(transactions)
-    serviceContainer.services.transactionService.clearTransactions()
-  }, 5000)
-}
-
-ServiceContainer.prototype.patchAngularBootstrap = function () {
-  var zoneService = this.services.zoneService
-
-  var DEFER_LABEL = 'NG_DEFER_BOOTSTRAP!'
-
-  var deferRegex = new RegExp('^' + DEFER_LABEL + '.*')
-  // If the bootstrap is already deferred. (like run by Protractor)
-  // In this case `resumeBootstrap` should be patched
-  if (deferRegex.test(window.name)) {
-    var originalResumeBootstrap
-    Object.defineProperty(window.angular, 'resumeBootstrap', {
-      get: function () {
-        return function (modules) {
-          return zoneService.zone.run(function () {
-            originalResumeBootstrap.call(window.angular, modules)
-          })
-        }
-      },
-      set: function (resumeBootstrap) {
-        originalResumeBootstrap = resumeBootstrap
-      }
-    })
-  } else { // If this is not a test, defer bootstrapping
-    window.name = DEFER_LABEL + window.name
-
-    window.angular.resumeDeferredBootstrap = function () {
-      return zoneService.zone.run(function () {
-        var resumeBootstrap = window.angular.resumeBootstrap
-        return resumeBootstrap.call(window.angular)
-      })
-    }
-
-    /* angular should remove DEFER_LABEL from window.name, but if angular is never loaded, we want
-     to remove it ourselves */
-    window.addEventListener('beforeunload', function () {
-      if (deferRegex.test(window.name)) {
-        window.name = window.name.substring(DEFER_LABEL.length)
-      }
-    })
-  }
-}
-
-module.exports = ServiceContainer
-
-},{"../lib/utils":28,"../patching/patchingService":30,"../transaction/transaction_service":34,"../transaction/zone_service":35,"./ngOpbeat":12,"zone.js":8}],16:[function(_dereq_,module,exports){
+},{}],19:[function(_dereq_,module,exports){
 module.exports = {
   createValidFrames: function createValidFrames (frames) {
     var result = []
@@ -3505,7 +3464,7 @@ module.exports = {
   }
 }
 
-},{}],17:[function(_dereq_,module,exports){
+},{}],20:[function(_dereq_,module,exports){
 var backendUtils = _dereq_('./backend_utils')
 module.exports = OpbeatBackend
 function OpbeatBackend (transport, logger, config) {
@@ -3620,6 +3579,13 @@ OpbeatBackend.prototype._formatTransactions = function (transactionList) {
 
   var groupedTraces = groupTraces(traces)
   var groupedTracesTimings = this.getRawGroupedTracesTimings(traces, groupedTraces)
+
+  groupedTraces.forEach(function (g) {
+    delete g._group
+    if (typeof g.signature === 'string') {
+      g.signature = g.signature.substring(0, 511)
+    }
+  })
 
   return {
     transactions: transactions,
@@ -3767,7 +3733,158 @@ function traceGroupingKey (trace) {
   ].join('-')
 }
 
-},{"./backend_utils":16}],18:[function(_dereq_,module,exports){
+},{"./backend_utils":19}],21:[function(_dereq_,module,exports){
+var patchXMLHttpRequest = _dereq_('./patches/xhrPatch')
+
+function patchCommon (serviceContainer) {
+  patchXMLHttpRequest(serviceContainer)
+}
+
+module.exports = patchCommon
+
+},{"./patches/xhrPatch":23}],22:[function(_dereq_,module,exports){
+module.exports = {
+  patchFunction: function patchModule (delegate, options) {},
+  _copyProperties: function _copyProperties (source, target) {
+    for (var key in source) {
+      if (source.hasOwnProperty(key)) {
+        target[key] = source[key]
+      }
+    }
+  },
+  wrapAfter: function wrapAfter (fn, wrapWith) {
+    return function () {
+      var res = fn.apply(this, arguments)
+      wrapWith.apply(this, arguments)
+      return res
+    }
+  },
+  wrapBefore: function wrapBefore (fn, wrapWith) {
+    return function () {
+      wrapWith.apply(this, arguments)
+      return fn.apply(this, arguments)
+    }
+  },
+  wrap: function (fn, before, after) {
+    return function () {
+      before.apply(this, arguments)
+      var res = fn.apply(this, arguments)
+      after.apply(this, arguments)
+      return res
+    }
+  },
+  argumentsToArray: function argumentsToArray (args) {
+    var newArgs = []
+    for (var i = 0; i < args.length; i++) {
+      newArgs[i] = args[i]
+    }
+    return newArgs
+  },
+  opbeatSymbol: opbeatSymbol,
+  patchMethod: patchMethod
+}
+
+function opbeatSymbol (name) {
+  return '__opbeat_symbol__' + name
+}
+
+function patchMethod (target, name, patchFn) {
+  var proto = target
+  while (proto && !proto.hasOwnProperty(name)) {
+    proto = Object.getPrototypeOf(proto)
+  }
+  if (!proto && target[name]) {
+    // somehow we did not find it, but we can see it. This happens on IE for Window properties.
+    proto = target
+  }
+  var delegateName = opbeatSymbol(name)
+  var delegate
+  if (proto && !(delegate = proto[delegateName])) {
+    delegate = proto[delegateName] = proto[name]
+    proto[name] = createNamedFn(name, patchFn(delegate, delegateName, name))
+  }
+  return delegate
+}
+
+function createNamedFn (name, delegate) {
+  try {
+    return (Function('f', 'return function ' + name + '(){return f(this, arguments)}'))(delegate) // eslint-disable-line
+  } catch (e) {
+    // if we fail, we must be CSP, just return delegate.
+    return function () {
+      return delegate(this, arguments)
+    }
+  }
+}
+
+},{}],23:[function(_dereq_,module,exports){
+var patchUtils = _dereq_('../patchUtils')
+
+var urlSympbol = patchUtils.opbeatSymbol('url')
+var methodSymbol = patchUtils.opbeatSymbol('method')
+var isAsyncSymbol = patchUtils.opbeatSymbol('isAsync')
+
+module.exports = function patchXMLHttpRequest () {
+  patchUtils.patchMethod(window.XMLHttpRequest.prototype, 'open', function (delegate) {
+    return function (self, args) {
+      self[methodSymbol] = args[0]
+      self[urlSympbol] = args[1]
+      self[isAsyncSymbol] = args[2]
+      delegate.apply(self, args)
+    }
+  })
+}
+
+},{"../patchUtils":22}],24:[function(_dereq_,module,exports){
+var TransactionService = _dereq_('../transaction/transaction_service')
+
+var utils = _dereq_('../lib/utils')
+
+function ServiceContainer (serviceFactory) {
+  this.serviceFactory = serviceFactory
+  this.services = {}
+
+  var configService = this.services.configService = this.serviceFactory.getConfigService()
+
+  var logger = this.services.logger = this.serviceFactory.getLogger()
+  var zoneService = this.services.zoneService = this.createZoneService()
+
+  var opbeatBackend = this.services.opbeatBackend = this.serviceFactory.getOpbeatBackend()
+  var transactionService = this.services.transactionService = new TransactionService(zoneService, this.services.logger, configService, opbeatBackend)
+  transactionService.scheduleTransactionSend()
+
+  if (utils.isUndefined(window.opbeatApi)) {
+    window.opbeatApi = {}
+  }
+  window.opbeatApi.subscribeToTransactions = transactionService.subscribe.bind(transactionService)
+
+  if (!utils.isUndefined(window.opbeatApi.onload)) {
+    var onOpbeatLoaded = window.opbeatApi.onload
+    onOpbeatLoaded.forEach(function (fn) {
+      try {
+        fn()
+      } catch (error) {
+        logger.error(error)
+      }
+    })
+  }
+  this.services.exceptionHandler = this.serviceFactory.getExceptionHandler()
+}
+
+ServiceContainer.prototype.createZoneService = function () {
+  var logger = this.services.logger
+
+  if (typeof window.Zone === 'undefined') {
+    _dereq_('zone.js')
+  }
+
+  var ZoneService = _dereq_('../transaction/zone_service')
+  return new ZoneService(window.Zone.current, logger, this.services.configService)
+}
+
+module.exports = ServiceContainer
+
+},{"../lib/utils":35,"../transaction/transaction_service":39,"../transaction/zone_service":40,"zone.js":8}],25:[function(_dereq_,module,exports){
 var OpbeatBackend = _dereq_('../backend/opbeat_backend')
 var Logger = _dereq_('loglevel')
 var Config = _dereq_('../lib/config')
@@ -3838,7 +3955,7 @@ ServiceFactory.prototype.getExceptionHandler = function () {
 
 module.exports = ServiceFactory
 
-},{"../backend/opbeat_backend":17,"../exceptions/exceptionHandler":21,"../lib/config":24,"../lib/transport":27,"../lib/utils":28,"loglevel":3}],19:[function(_dereq_,module,exports){
+},{"../backend/opbeat_backend":20,"../exceptions/exceptionHandler":28,"../lib/config":31,"../lib/transport":34,"../lib/utils":35,"loglevel":3}],26:[function(_dereq_,module,exports){
 function Subscription () {
   this.subscriptions = []
 }
@@ -3867,7 +3984,7 @@ Subscription.prototype.applyAll = function (applyTo, applyWith) {
 
 module.exports = Subscription
 
-},{}],20:[function(_dereq_,module,exports){
+},{}],27:[function(_dereq_,module,exports){
 var Promise = _dereq_('es6-promise').Promise
 var utils = _dereq_('../lib/utils')
 var fileFetcher = _dereq_('../lib/fileFetcher')
@@ -4031,7 +4148,7 @@ module.exports = {
 
 }
 
-},{"../lib/fileFetcher":25,"../lib/utils":28,"es6-promise":2}],21:[function(_dereq_,module,exports){
+},{"../lib/fileFetcher":32,"../lib/utils":35,"es6-promise":2}],28:[function(_dereq_,module,exports){
 var Promise = _dereq_('es6-promise').Promise
 var stackTrace = _dereq_('./stacktrace')
 var frames = _dereq_('./frames')
@@ -4105,7 +4222,7 @@ ExceptionHandler.prototype._processError = function processError (error, msg, fi
 
 module.exports = ExceptionHandler
 
-},{"./frames":22,"./stacktrace":23,"es6-promise":2}],22:[function(_dereq_,module,exports){
+},{"./frames":29,"./stacktrace":30,"es6-promise":2}],29:[function(_dereq_,module,exports){
 var Promise = _dereq_('es6-promise').Promise
 
 var logger = _dereq_('../lib/logger')
@@ -4338,7 +4455,7 @@ module.exports = {
 
 }
 
-},{"../lib/config":24,"../lib/logger":26,"../lib/utils":28,"./context":20,"./stacktrace":23,"es6-promise":2}],23:[function(_dereq_,module,exports){
+},{"../lib/config":31,"../lib/logger":33,"../lib/utils":35,"./context":27,"./stacktrace":30,"es6-promise":2}],30:[function(_dereq_,module,exports){
 var ErrorStackParser = _dereq_('error-stack-parser')
 var StackGenerator = _dereq_('stack-generator')
 var Promise = _dereq_('es6-promise').Promise
@@ -4446,7 +4563,7 @@ function normalizeFunctionName (fnName) {
   return fnName
 }
 
-},{"../lib/utils":28,"error-stack-parser":1,"es6-promise":2,"stack-generator":6}],24:[function(_dereq_,module,exports){
+},{"../lib/utils":35,"error-stack-parser":1,"es6-promise":2,"stack-generator":6}],31:[function(_dereq_,module,exports){
 var utils = _dereq_('./utils')
 var Subscription = _dereq_('../common/subscription')
 
@@ -4454,7 +4571,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.1.3',
+    VERSION: 'v3.1.4',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -4569,9 +4686,9 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.1.3'
+Config.prototype.VERSION = 'v3.1.4'
 
-Config.prototype.isPlatformSupport = function () {
+Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
   typeof JSON.stringify === 'function' &&
   typeof Function.bind === 'function' &&
@@ -4582,7 +4699,7 @@ Config.prototype.isPlatformSupport = function () {
 
 module.exports = new Config()
 
-},{"../common/subscription":19,"./utils":28}],25:[function(_dereq_,module,exports){
+},{"../common/subscription":26,"./utils":35}],32:[function(_dereq_,module,exports){
 var SimpleCache = _dereq_('simple-lru-cache')
 var transport = _dereq_('./transport')
 
@@ -4602,7 +4719,7 @@ module.exports = {
   }
 }
 
-},{"./transport":27,"simple-lru-cache":4}],26:[function(_dereq_,module,exports){
+},{"./transport":34,"simple-lru-cache":4}],33:[function(_dereq_,module,exports){
 var config = _dereq_('./config')
 
 var logStack = []
@@ -4645,7 +4762,7 @@ module.exports = {
   }
 }
 
-},{"./config":24}],27:[function(_dereq_,module,exports){
+},{"./config":31}],34:[function(_dereq_,module,exports){
 var logger = _dereq_('./logger')
 var config = _dereq_('./config')
 var Promise = _dereq_('es6-promise').Promise
@@ -4724,7 +4841,7 @@ function _makeRequest (url, method, type, data, headers) {
   })
 }
 
-},{"./config":24,"./logger":26,"es6-promise":2}],28:[function(_dereq_,module,exports){
+},{"./config":31,"./logger":33,"es6-promise":2}],35:[function(_dereq_,module,exports){
 var slice = [].slice
 
 module.exports = {
@@ -4961,109 +5078,7 @@ function isFunction (value) {
   return typeof value === 'function'
 }
 
-},{}],29:[function(_dereq_,module,exports){
-module.exports = {
-  patchFunction: function patchModule (delegate, options) {},
-  _copyProperties: function _copyProperties (source, target) {
-    for (var key in source) {
-      if (source.hasOwnProperty(key)) {
-        target[key] = source[key]
-      }
-    }
-  },
-  wrapAfter: function wrapAfter (fn, wrapWith) {
-    return function () {
-      var res = fn.apply(this, arguments)
-      wrapWith.apply(this, arguments)
-      return res
-    }
-  },
-  wrapBefore: function wrapBefore (fn, wrapWith) {
-    return function () {
-      wrapWith.apply(this, arguments)
-      return fn.apply(this, arguments)
-    }
-  },
-  wrap: function (fn, before, after) {
-    return function () {
-      before.apply(this, arguments)
-      var res = fn.apply(this, arguments)
-      after.apply(this, arguments)
-      return res
-    }
-  },
-  argumentsToArray: function argumentsToArray (args) {
-    var newArgs = []
-    for (var i = 0; i < args.length; i++) {
-      newArgs[i] = args[i]
-    }
-    return newArgs
-  },
-  opbeatSymbol: opbeatSymbol,
-  patchMethod: patchMethod
-}
-
-function opbeatSymbol (name) {
-  return '__opbeat_symbol__' + name
-}
-
-function patchMethod (target, name, patchFn) {
-  var proto = target
-  while (proto && !proto.hasOwnProperty(name)) {
-    proto = Object.getPrototypeOf(proto)
-  }
-  if (!proto && target[name]) {
-    // somehow we did not find it, but we can see it. This happens on IE for Window properties.
-    proto = target
-  }
-  var delegateName = opbeatSymbol(name)
-  var delegate
-  if (proto && !(delegate = proto[delegateName])) {
-    delegate = proto[delegateName] = proto[name]
-    proto[name] = createNamedFn(name, patchFn(delegate, delegateName, name))
-  }
-  return delegate
-}
-
-function createNamedFn (name, delegate) {
-  try {
-    return (Function('f', 'return function ' + name + '(){return f(this, arguments)}'))(delegate) // eslint-disable-line
-  } catch (e) {
-    // if we fail, we must be CSP, just return delegate.
-    return function () {
-      return delegate(this, arguments)
-    }
-  }
-}
-
-},{}],30:[function(_dereq_,module,exports){
-var patchUtils = _dereq_('./patchUtils')
-
-var urlSympbol = patchUtils.opbeatSymbol('url')
-var methodSymbol = patchUtils.opbeatSymbol('method')
-var isAsyncSymbol = patchUtils.opbeatSymbol('isAsync')
-
-function patchingService () {
-}
-
-patchingService.prototype.patchXMLHttpRequest = function () {
-  patchUtils.patchMethod(window.XMLHttpRequest.prototype, 'open', function (delegate) {
-    return function (self, args) {
-      self[methodSymbol] = args[0]
-      self[urlSympbol] = args[1]
-      self[isAsyncSymbol] = args[2]
-      delegate.apply(self, args)
-    }
-  })
-}
-
-patchingService.prototype.patchAll = function () {
-  this.patchXMLHttpRequest()
-}
-
-module.exports = patchingService
-
-},{"./patchUtils":29}],31:[function(_dereq_,module,exports){
+},{}],36:[function(_dereq_,module,exports){
 var Promise = _dereq_('es6-promise').Promise
 var frames = _dereq_('../exceptions/frames')
 var traceCache = _dereq_('./traceCache')
@@ -5184,14 +5199,14 @@ Trace.prototype.getTraceStackFrames = function (callback) {
 
 module.exports = Trace
 
-},{"../exceptions/frames":22,"../lib/utils":28,"./traceCache":32,"es6-promise":2}],32:[function(_dereq_,module,exports){
+},{"../exceptions/frames":29,"../lib/utils":35,"./traceCache":37,"es6-promise":2}],37:[function(_dereq_,module,exports){
 var SimpleCache = _dereq_('simple-lru-cache')
 
 module.exports = new SimpleCache({
   'maxSize': 5000
 })
 
-},{"simple-lru-cache":4}],33:[function(_dereq_,module,exports){
+},{"simple-lru-cache":4}],38:[function(_dereq_,module,exports){
 var Trace = _dereq_('./trace')
 var Promise = _dereq_('es6-promise').Promise
 var utils = _dereq_('../lib/utils')
@@ -5384,18 +5399,19 @@ function findLatestTrace (traces) {
 
 module.exports = Transaction
 
-},{"../lib/utils":28,"./trace":31,"es6-promise":2}],34:[function(_dereq_,module,exports){
+},{"../lib/utils":35,"./trace":36,"es6-promise":2}],39:[function(_dereq_,module,exports){
 var Transaction = _dereq_('./transaction')
 var utils = _dereq_('../lib/utils')
 var Subscription = _dereq_('../common/subscription')
 
-function TransactionService (zoneService, logger, config) {
+function TransactionService (zoneService, logger, config, opbeatBackend) {
   this._config = config
   if (typeof config === 'undefined') {
     logger.debug('TransactionService: config is not provided')
   }
   this._queue = []
   this._logger = logger
+  this._opbeatBackend = opbeatBackend
   this._zoneService = zoneService
 
   this.transactions = []
@@ -5469,6 +5485,13 @@ TransactionService.prototype.startCounter = function (transaction) {
   })
 }
 
+TransactionService.prototype.getCurrentTransaction = function () {
+  var tr = this._zoneService.get('transaction')
+  if (!utils.isUndefined(tr) && !tr.ended) {
+    return tr
+  }
+}
+
 TransactionService.prototype.startTransaction = function (name, type) {
   var self = this
 
@@ -5478,7 +5501,7 @@ TransactionService.prototype.startTransaction = function (name, type) {
   }
 
   var tr = this._zoneService.get('transaction')
-  if (typeof tr === 'undefined' || tr.ended) {
+  if (!this.getCurrentTransaction()) {
     tr = this.createTransaction(name, type, perfOptions)
   } else {
     tr.name = name
@@ -5510,14 +5533,17 @@ TransactionService.prototype.startTrace = function (signature, type, options) {
   if (!perfOptions.enable) {
     return
   }
-  var tr = this._zoneService.get('transaction')
-  if (!utils.isUndefined(tr) && !tr.ended) {
+
+  var trans = this.getCurrentTransaction()
+
+  if (trans) {
     this._logger.debug('TransactionService.startTrace', signature, type)
   } else {
-    tr = this.createTransaction('ZoneTransaction', 'transaction', perfOptions)
+    trans = this.createTransaction('ZoneTransaction', 'transaction', perfOptions)
     this._logger.debug('TransactionService.startTrace - ZoneTransaction', signature, type)
   }
-  var trace = tr.startTrace(signature, type, options)
+
+  var trace = trans.startTrace(signature, type, options)
   // var zone = this._zoneService.getCurrentZone()
   // trace._zone = 'Zone(' + zone.$id + ') ' // parent(' + zone.parent.$id + ') '
   return trace
@@ -5573,11 +5599,28 @@ TransactionService.prototype.detectFinish = function () {
   }
 }
 
+TransactionService.prototype.scheduleTransactionSend = function () {
+  var logger = this._logger
+  var opbeatBackend = this._opbeatBackend
+  var self = this
+
+  setInterval(function () {
+    var transactions = self.getTransactions()
+    if (transactions.length === 0) {
+      return
+    }
+    logger.debug('Sending Transactions to opbeat.', transactions.length)
+    // todo: if transactions are already being sent, should check
+    opbeatBackend.sendTransactions(transactions)
+    self.clearTransactions()
+  }, 5000)
+}
+
 module.exports = TransactionService
 
-},{"../common/subscription":19,"../lib/utils":28,"./transaction":33}],35:[function(_dereq_,module,exports){
+},{"../common/subscription":26,"../lib/utils":35,"./transaction":38}],40:[function(_dereq_,module,exports){
 var Subscription = _dereq_('../common/subscription')
-var patchUtils = _dereq_('../patching/patchUtils')
+var patchUtils = _dereq_('../common/patchUtils')
 var opbeatTaskSymbol = patchUtils.opbeatSymbol('taskData')
 
 var urlSympbol = patchUtils.opbeatSymbol('url')
@@ -5767,4 +5810,4 @@ ZoneService.prototype.runOuter = function (fn) {
 
 module.exports = ZoneService
 
-},{"../common/subscription":19,"../patching/patchUtils":29}]},{},[13]);
+},{"../common/patchUtils":22,"../common/subscription":26}]},{},[12]);
