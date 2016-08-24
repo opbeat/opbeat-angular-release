@@ -1818,7 +1818,7 @@ module.exports=Cache
 	    function scheduleTask(task) {
 	        var data = task.data;
 	        data.target.addEventListener('readystatechange', function () {
-	            if (data.target.readyState === XMLHttpRequest.DONE) {
+	            if (data.target.readyState === data.target.DONE) {
 	                if (!data.aborted) {
 	                    task.invoke();
 	                }
@@ -1880,6 +1880,9 @@ module.exports=Cache
 	/* WEBPACK VAR INJECTION */(function(global) {;
 	;
 	var Zone = (function (global) {
+	    if (global.Zone) {
+	        throw new Error('Zone already loaded.');
+	    }
 	    var Zone = (function () {
 	        function Zone(parent, zoneSpec) {
 	            this._properties = null;
@@ -1913,13 +1916,19 @@ module.exports=Cache
 	        });
 	        ;
 	        Zone.prototype.get = function (key) {
+	            var zone = this.getZoneWith(key);
+	            if (zone)
+	                return zone._properties[key];
+	        };
+	        Zone.prototype.getZoneWith = function (key) {
 	            var current = this;
 	            while (current) {
 	                if (current._properties.hasOwnProperty(key)) {
-	                    return current._properties[key];
+	                    return current;
 	                }
 	                current = current._parent;
 	            }
+	            return null;
 	        };
 	        Zone.prototype.fork = function (zoneSpec) {
 	            if (!zoneSpec)
@@ -2149,11 +2158,15 @@ module.exports=Cache
 	            this.callback = callback;
 	            var self = this;
 	            this.invoke = function () {
+	                _numberOfNestedTaskFrames++;
 	                try {
 	                    return zone.runTask(self, this, arguments);
 	                }
 	                finally {
-	                    drainMicroTaskQueue();
+	                    if (_numberOfNestedTaskFrames == 1) {
+	                        drainMicroTaskQueue();
+	                    }
+	                    _numberOfNestedTaskFrames--;
 	                }
 	            };
 	        }
@@ -2177,9 +2190,11 @@ module.exports=Cache
 	    var _microTaskQueue = [];
 	    var _isDrainingMicrotaskQueue = false;
 	    var _uncaughtPromiseErrors = [];
-	    var _drainScheduled = false;
+	    var _numberOfNestedTaskFrames = 0;
 	    function scheduleQueueDrain() {
-	        if (!_drainScheduled && !_currentTask && _microTaskQueue.length == 0) {
+	        // if we are not running in any task, and there has not been anything scheduled
+	        // we must bootstrap the initial task creation by manually scheduling the drain
+	        if (_numberOfNestedTaskFrames == 0 && _microTaskQueue.length == 0) {
 	            // We are not running in Task, so we need to kickstart the microtask queue.
 	            if (global[symbolPromise]) {
 	                global[symbolPromise].resolve(0)[symbolThen](drainMicroTaskQueue);
@@ -2196,7 +2211,7 @@ module.exports=Cache
 	    function consoleError(e) {
 	        var rejection = e && e.rejection;
 	        if (rejection) {
-	            console.error('Unhandled Promise rejection:', rejection instanceof Error ? rejection.message : rejection, '; Zone:', e.zone.name, '; Task:', e.task && e.task.source, '; Value:', rejection);
+	            console.error('Unhandled Promise rejection:', rejection instanceof Error ? rejection.message : rejection, '; Zone:', e.zone.name, '; Task:', e.task && e.task.source, '; Value:', rejection, rejection instanceof Error ? rejection.stack : undefined);
 	        }
 	        console.error(e);
 	    }
@@ -2217,10 +2232,8 @@ module.exports=Cache
 	                }
 	            }
 	            while (_uncaughtPromiseErrors.length) {
-	                var uncaughtPromiseErrors = _uncaughtPromiseErrors;
-	                _uncaughtPromiseErrors = [];
-	                var _loop_1 = function(i) {
-	                    var uncaughtPromiseError = uncaughtPromiseErrors[i];
+	                var _loop_1 = function() {
+	                    var uncaughtPromiseError = _uncaughtPromiseErrors.shift();
 	                    try {
 	                        uncaughtPromiseError.zone.runGuarded(function () { throw uncaughtPromiseError; });
 	                    }
@@ -2228,12 +2241,11 @@ module.exports=Cache
 	                        consoleError(e);
 	                    }
 	                };
-	                for (var i = 0; i < uncaughtPromiseErrors.length; i++) {
-	                    _loop_1(i);
+	                while (_uncaughtPromiseErrors.length) {
+	                    _loop_1();
 	                }
 	            }
 	            _isDrainingMicrotaskQueue = false;
-	            _drainScheduled = false;
 	        }
 	    }
 	    function isThenable(value) {
@@ -2316,6 +2328,9 @@ module.exports=Cache
 	    var ZoneAwarePromise = (function () {
 	        function ZoneAwarePromise(executor) {
 	            var promise = this;
+	            if (!(promise instanceof ZoneAwarePromise)) {
+	                throw new Error('Must be an instanceof Promise.');
+	            }
 	            promise[symbolState] = UNRESOLVED;
 	            promise[symbolValue] = []; // queue;
 	            try {
@@ -2373,7 +2388,7 @@ module.exports=Cache
 	            return promise;
 	        };
 	        ZoneAwarePromise.prototype.then = function (onFulfilled, onRejected) {
-	            var chainPromise = new ZoneAwarePromise(null);
+	            var chainPromise = new this.constructor(null);
 	            var zone = Zone.current;
 	            if (this[symbolState] == UNRESOLVED) {
 	                this[symbolValue].push(zone, chainPromise, onFulfilled, onRejected);
@@ -2401,6 +2416,8 @@ module.exports=Cache
 	            }).then(onResolve, onReject);
 	        };
 	    }
+	    // This is not part of public API, but it is usefull for tests, so we expose it.
+	    Promise[Zone.__symbol__('uncaughtPromiseErrors')] = _uncaughtPromiseErrors;
 	    return global.Zone = Zone;
 	})(typeof window === 'undefined' ? global : window);
 
@@ -2515,8 +2532,9 @@ module.exports=Cache
 	            this[_prop] = null;
 	        }
 	    };
+	    // The getter would return undefined for unassigned properties but the default value of an unassigned property is null
 	    desc.get = function () {
-	        return this[_prop];
+	        return this[_prop] || null;
 	    };
 	    Object.defineProperty(obj, prop, desc);
 	}
@@ -2770,10 +2788,11 @@ module.exports=Cache
 	        if (isUnconfigurable(obj, prop)) {
 	            throw new TypeError('Cannot assign to read only property \'' + prop + '\' of ' + obj);
 	        }
+	        var originalConfigurableFlag = desc.configurable;
 	        if (prop !== 'prototype') {
 	            desc = rewriteDescriptor(obj, prop, desc);
 	        }
-	        return _defineProperty(obj, prop, desc);
+	        return _tryDefineProperty(obj, prop, desc, originalConfigurableFlag);
 	    };
 	    Object.defineProperties = function (obj, props) {
 	        Object.keys(props).forEach(function (prop) {
@@ -2800,8 +2819,9 @@ module.exports=Cache
 	exports.propertyPatch = propertyPatch;
 	;
 	function _redefineProperty(obj, prop, desc) {
+	    var originalConfigurableFlag = desc.configurable;
 	    desc = rewriteDescriptor(obj, prop, desc);
-	    return _defineProperty(obj, prop, desc);
+	    return _tryDefineProperty(obj, prop, desc, originalConfigurableFlag);
 	}
 	exports._redefineProperty = _redefineProperty;
 	;
@@ -2817,6 +2837,26 @@ module.exports=Cache
 	        obj[unconfigurablesKey][prop] = true;
 	    }
 	    return desc;
+	}
+	function _tryDefineProperty(obj, prop, desc, originalConfigurableFlag) {
+	    try {
+	        return _defineProperty(obj, prop, desc);
+	    }
+	    catch (e) {
+	        if (desc.configurable) {
+	            // In case of errors, when the configurable flag was likely set by rewriteDescriptor(), let's retry with the original flag value
+	            if (typeof originalConfigurableFlag == 'undefined') {
+	                delete desc.configurable;
+	            }
+	            else {
+	                desc.configurable = originalConfigurableFlag;
+	            }
+	            return _defineProperty(obj, prop, desc);
+	        }
+	        else {
+	            throw e;
+	        }
+	    }
 	}
 
 
@@ -3070,38 +3110,39 @@ var ngOpbeat = _dereq_('./ngOpbeat')
 var patchAngularBootstrap = _dereq_('./patches/bootstrapPatch')
 var patchCommon = _dereq_('../common/patchCommon')
 
-function initialize (serviceContainer, isAngularSupported) {
+function initialize (serviceContainer) {
   var services = serviceContainer.services
-  if (typeof window.angular === 'undefined') {
-    throw new Error('AngularJS is not available. Please make sure you load opbeat-angular after AngularJS.')
-  } else if (!services.configService.isPlatformSupported()) {
-    registerOpbeatModule(services, isAngularSupported)
+  if (!services.configService.isPlatformSupported()) {
     services.logger.warn('Platform is not supported.')
-  } else if (!isAngularSupported()) {
-    registerOpbeatModule(services, isAngularSupported)
-    services.logger.warn('AngularJS version is not supported.')
   } else {
-    patchCommon(serviceContainer)
-    patchAngularBootstrap(services.zoneService)
-    registerOpbeatModule(services, isAngularSupported)
+    serviceContainer.initialize()
   }
+
+  var alreadyRegistered = false
+  patchCommon(serviceContainer)
+
+  function beforeBootstrap (modules) {
+    // We're adding 'ngOpbeat' just before bootstrap, so it doesn't have to be specified in the dependencies
+
+    if (modules && typeof modules.unshift === 'function') {
+      modules.unshift('ngOpbeat')
+    }
+    if (!alreadyRegistered) {
+      alreadyRegistered = true
+      registerOpbeatModule(services)
+    }
+  }
+
+  patchAngularBootstrap(services.zoneService, beforeBootstrap)
 }
 
-function registerOpbeatModule (services, isAngularSupported) {
-  ngOpbeat(services.transactionService, services.logger, services.configService, isAngularSupported, services.exceptionHandler)
+function registerOpbeatModule (services) {
+  ngOpbeat(services.transactionService, services.logger, services.configService, services.exceptionHandler)
 }
 
 module.exports = initialize
 
-},{"../common/patchCommon":21,"./ngOpbeat":11,"./patches/bootstrapPatch":13}],10:[function(_dereq_,module,exports){
-
-module.exports = function isAngularSupported () {
-  var angular = window.angular
-  return (angular.version && angular.version.major >= 1 && (angular.version.minor > 3 || angular.version.minor === 3 && angular.version.dot >= 12))
-}
-
-
-},{}],11:[function(_dereq_,module,exports){
+},{"../common/patchCommon":20,"./ngOpbeat":10,"./patches/bootstrapPatch":12}],10:[function(_dereq_,module,exports){
 var patchController = _dereq_('./patches/controllerPatch')
 var patchCompile = _dereq_('./patches/compilePatch')
 var patchRootScope = _dereq_('./patches/rootScopePatch')
@@ -3164,7 +3205,7 @@ function patchAll ($provide, transactionService) {
 
 function noop () {}
 
-function registerOpbeatModule (transactionService, logger, configService, isAngularSupported, exceptionHandler) {
+function registerOpbeatModule (transactionService, logger, configService, exceptionHandler) {
   function moduleRun ($rootScope) {
     configService.set('isInstalled', true)
     configService.set('opbeatAgentName', 'opbeat-angular')
@@ -3202,69 +3243,99 @@ function registerOpbeatModule (transactionService, logger, configService, isAngu
     patchAll($provide, transactionService)
   }
 
-  if (!configService.isPlatformSupported() || !isAngularSupported()) {
-    window.angular.module('ngOpbeat', [])
-      .provider('$opbeat', new NgOpbeatProvider(logger, configService, exceptionHandler))
-      .config(['$provide', noop])
-      .run(['$rootScope', noop])
-  } else {
-    window.angular.module('ngOpbeat', [])
-      .provider('$opbeat', new NgOpbeatProvider(logger, configService, exceptionHandler))
-      .config(['$provide', moduleConfig])
-      .run(['$rootScope', moduleRun])
+  if (window.angular) {
+    if (!configService.isPlatformSupported()) {
+      window.angular.module('ngOpbeat', [])
+        .provider('$opbeat', new NgOpbeatProvider(logger, configService, exceptionHandler))
+        .config(['$provide', noop])
+        .run(['$rootScope', noop])
+    } else {
+      window.angular.module('ngOpbeat', [])
+        .provider('$opbeat', new NgOpbeatProvider(logger, configService, exceptionHandler))
+        .config(['$provide', moduleConfig])
+        .run(['$rootScope', moduleRun])
+    }
+    window.angular.module('opbeat-angular', ['ngOpbeat'])
   }
-  window.angular.module('opbeat-angular', ['ngOpbeat'])
 }
 
 module.exports = registerOpbeatModule
 
-},{"./patches/compilePatch":14,"./patches/controllerPatch":15,"./patches/directivesPatch":16,"./patches/exceptionHandlerPatch":17,"./patches/rootScopePatch":18}],12:[function(_dereq_,module,exports){
+},{"./patches/compilePatch":13,"./patches/controllerPatch":14,"./patches/directivesPatch":15,"./patches/exceptionHandlerPatch":16,"./patches/rootScopePatch":17}],11:[function(_dereq_,module,exports){
 var ServiceContainer = _dereq_('../common/serviceContainer')
 var ServiceFactory = _dereq_('../common/serviceFactory')
-var isAngularSupported = _dereq_('./isAngularSupported')
 var angularInitializer = _dereq_('./angularInitializer')
 
 function init () {
   var serviceFactory = new ServiceFactory()
   var serviceContainer = new ServiceContainer(serviceFactory)
 
-  angularInitializer(serviceContainer, isAngularSupported)
+  angularInitializer(serviceContainer)
 }
 
 init()
 
-},{"../common/serviceContainer":24,"../common/serviceFactory":25,"./angularInitializer":9,"./isAngularSupported":10}],13:[function(_dereq_,module,exports){
+},{"../common/serviceContainer":23,"../common/serviceFactory":24,"./angularInitializer":9}],12:[function(_dereq_,module,exports){
+var DEFER_LABEL = 'NG_DEFER_BOOTSTRAP!'
+var deferRegex = new RegExp('^' + DEFER_LABEL + '.*')
 
-function patchAngularBootstrap (zoneService) {
-  var DEFER_LABEL = 'NG_DEFER_BOOTSTRAP!'
+function patchMainBootstrap (zoneService, beforeBootstrap, weDeferred) {
+  if (typeof window.angular === 'undefined') {
+    return
+  }
+  var originalBootstrapFn = window.angular.bootstrap
 
-  var deferRegex = new RegExp('^' + DEFER_LABEL + '.*')
+  function bootstrap (element, modules) {
+    beforeBootstrap(modules)
+    if (weDeferred && deferRegex.test(window.name)) {
+      window.name = window.name.substring(DEFER_LABEL.length)
+    }
+    return zoneService.runInOpbeatZone(originalBootstrapFn, window.angular, arguments)
+  }
+
+  Object.defineProperty(window.angular, 'bootstrap', {
+    get: function () {
+      if (typeof originalBootstrapFn === 'function') {
+        return bootstrap
+      } else {
+        return originalBootstrapFn
+      }
+    },
+    set: function (bootstrapFn) {
+      originalBootstrapFn = bootstrapFn
+    }
+  })
+}
+
+function patchDeferredBootstrap (zoneService, beforeBootstrap) {
+  if (typeof window.angular === 'undefined') {
+    return
+  }
   // If the bootstrap is already deferred. (like run by Protractor)
   // In this case `resumeBootstrap` should be patched
   if (deferRegex.test(window.name)) {
-    var originalResumeBootstrap
+    var originalResumeBootstrap = window.angular.resumeBootstrap
     Object.defineProperty(window.angular, 'resumeBootstrap', {
       get: function () {
         return function (modules) {
-          return zoneService.zone.run(function () {
-            return originalResumeBootstrap.call(window.angular, modules)
-          })
+          beforeBootstrap(modules)
+          return zoneService.runInOpbeatZone(originalResumeBootstrap, window.angular, arguments)
         }
       },
       set: function (resumeBootstrap) {
         originalResumeBootstrap = resumeBootstrap
       }
     })
+    // we have not deferred the bootstrap
+    return false
   } else { // If this is not a test, defer bootstrapping
     window.name = DEFER_LABEL + window.name
 
     window.angular.resumeDeferredBootstrap = function () {
-      return zoneService.zone.run(function () {
-        var resumeBootstrap = window.angular.resumeBootstrap
-        return resumeBootstrap.call(window.angular)
-      })
+      var modules = []
+      beforeBootstrap(modules)
+      return zoneService.runInOpbeatZone(window.angular.resumeBootstrap, window.angular, [modules])
     }
-
     /* angular should remove DEFER_LABEL from window.name, but if angular is never loaded, we want
      to remove it ourselves */
     window.addEventListener('beforeunload', function () {
@@ -3272,12 +3343,55 @@ function patchAngularBootstrap (zoneService) {
         window.name = window.name.substring(DEFER_LABEL.length)
       }
     })
+    // we have deferred the bootstrap
+    return true
+  }
+}
+
+function createAngular (zoneService, beforeBootstrap) {
+  // with this method we can initialize opbeat-angular before or after angular is loaded
+  var alreadyPatched = false
+  var originalAngular = window.angular
+  // todo: check if defineProperty exists, add it isPlatformSupported
+  // we don't support browsers that don't have defineProperty (IE<9)
+  Object.defineProperty(window, 'angular', {
+    get: function () {
+      return originalAngular
+    },
+    set: function (value) {
+      originalAngular = value
+      if (!alreadyPatched && typeof originalAngular === 'object') {
+        alreadyPatched = true
+        patchAll(zoneService, beforeBootstrap)
+      }
+    },
+    enumerable: true,
+    configurable: true
+  })
+}
+
+function noop () {}
+
+function patchAll (zoneService, beforeBootstrap) {
+  var weDeferred = patchDeferredBootstrap(zoneService, beforeBootstrap)
+  patchMainBootstrap(zoneService, beforeBootstrap, weDeferred)
+}
+
+function patchAngularBootstrap (zoneService, beforeBootstrap) {
+  if (typeof beforeBootstrap !== 'function') {
+    beforeBootstrap = noop
+  }
+
+  if (window.angular) {
+    patchAll(zoneService, beforeBootstrap)
+  } else {
+    createAngular(zoneService, beforeBootstrap)
   }
 }
 
 module.exports = patchAngularBootstrap
 
-},{}],14:[function(_dereq_,module,exports){
+},{}],13:[function(_dereq_,module,exports){
 var patchUtils = _dereq_('../../common/patchUtils')
 var utils = _dereq_('../../lib/utils')
 module.exports = function ($provide, transactionService) {
@@ -3305,7 +3419,7 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{"../../common/patchUtils":22,"../../lib/utils":35}],15:[function(_dereq_,module,exports){
+},{"../../common/patchUtils":21,"../../lib/utils":34}],14:[function(_dereq_,module,exports){
 var utils = _dereq_('../../lib/utils')
 
 function getControllerInfoFromArgs (args) {
@@ -3355,7 +3469,7 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{"../../lib/utils":35}],16:[function(_dereq_,module,exports){
+},{"../../lib/utils":34}],15:[function(_dereq_,module,exports){
 var utils = _dereq_('../../lib/utils')
 module.exports = function ($provide, transactionService) {
   'use strict'
@@ -3417,7 +3531,7 @@ function humanReadableWatchExpression (fn) {
   return fn.toString()
 }
 
-},{"../../lib/utils":35}],17:[function(_dereq_,module,exports){
+},{"../../lib/utils":34}],16:[function(_dereq_,module,exports){
 
 module.exports = function patchExceptionHandler ($provide) {
   $provide.decorator('$exceptionHandler', ['$delegate', '$opbeat', function $ExceptionHandlerDecorator ($delegate, $opbeat) {
@@ -3428,7 +3542,7 @@ module.exports = function patchExceptionHandler ($provide) {
   }])
 }
 
-},{}],18:[function(_dereq_,module,exports){
+},{}],17:[function(_dereq_,module,exports){
 module.exports = function ($provide, transactionService) {
   $provide.decorator('$rootScope', ['$delegate', '$injector', function ($delegate, $injector) {
     return decorateRootScope($delegate, transactionService)
@@ -3451,7 +3565,7 @@ function decorateRootScope ($delegate, transactionService) {
   return $delegate
 }
 
-},{}],19:[function(_dereq_,module,exports){
+},{}],18:[function(_dereq_,module,exports){
 module.exports = {
   createValidFrames: function createValidFrames (frames) {
     var result = []
@@ -3464,7 +3578,7 @@ module.exports = {
   }
 }
 
-},{}],20:[function(_dereq_,module,exports){
+},{}],19:[function(_dereq_,module,exports){
 var backendUtils = _dereq_('./backend_utils')
 module.exports = OpbeatBackend
 function OpbeatBackend (transport, logger, config) {
@@ -3733,7 +3847,7 @@ function traceGroupingKey (trace) {
   ].join('-')
 }
 
-},{"./backend_utils":19}],21:[function(_dereq_,module,exports){
+},{"./backend_utils":18}],20:[function(_dereq_,module,exports){
 var patchXMLHttpRequest = _dereq_('./patches/xhrPatch')
 
 function patchCommon (serviceContainer) {
@@ -3742,7 +3856,7 @@ function patchCommon (serviceContainer) {
 
 module.exports = patchCommon
 
-},{"./patches/xhrPatch":23}],22:[function(_dereq_,module,exports){
+},{"./patches/xhrPatch":22}],21:[function(_dereq_,module,exports){
 module.exports = {
   patchFunction: function patchModule (delegate, options) {},
   _copyProperties: function _copyProperties (source, target) {
@@ -3817,7 +3931,7 @@ function createNamedFn (name, delegate) {
   }
 }
 
-},{}],23:[function(_dereq_,module,exports){
+},{}],22:[function(_dereq_,module,exports){
 var patchUtils = _dereq_('../patchUtils')
 
 var urlSympbol = patchUtils.opbeatSymbol('url')
@@ -3835,19 +3949,27 @@ module.exports = function patchXMLHttpRequest () {
   })
 }
 
-},{"../patchUtils":22}],24:[function(_dereq_,module,exports){
+},{"../patchUtils":21}],23:[function(_dereq_,module,exports){
 var TransactionService = _dereq_('../transaction/transaction_service')
 
 var utils = _dereq_('../lib/utils')
 
+if (typeof window.Zone === 'undefined') {
+  _dereq_('zone.js')
+}
+
 function ServiceContainer (serviceFactory) {
   this.serviceFactory = serviceFactory
   this.services = {}
+  this.services.configService = this.serviceFactory.getConfigService()
+  this.services.logger = this.serviceFactory.getLogger()
+  this.services.zoneService = this.createZoneService()
+}
 
-  var configService = this.services.configService = this.serviceFactory.getConfigService()
-
-  var logger = this.services.logger = this.serviceFactory.getLogger()
-  var zoneService = this.services.zoneService = this.createZoneService()
+ServiceContainer.prototype.initialize = function () {
+  var configService = this.services.configService
+  var logger = this.services.logger
+  var zoneService = this.services.zoneService
 
   var opbeatBackend = this.services.opbeatBackend = this.serviceFactory.getOpbeatBackend()
   var transactionService = this.services.transactionService = new TransactionService(zoneService, this.services.logger, configService, opbeatBackend)
@@ -3874,17 +3996,13 @@ function ServiceContainer (serviceFactory) {
 ServiceContainer.prototype.createZoneService = function () {
   var logger = this.services.logger
 
-  if (typeof window.Zone === 'undefined') {
-    _dereq_('zone.js')
-  }
-
   var ZoneService = _dereq_('../transaction/zone_service')
   return new ZoneService(window.Zone.current, logger, this.services.configService)
 }
 
 module.exports = ServiceContainer
 
-},{"../lib/utils":35,"../transaction/transaction_service":39,"../transaction/zone_service":40,"zone.js":8}],25:[function(_dereq_,module,exports){
+},{"../lib/utils":34,"../transaction/transaction_service":38,"../transaction/zone_service":39,"zone.js":8}],24:[function(_dereq_,module,exports){
 var OpbeatBackend = _dereq_('../backend/opbeat_backend')
 var Logger = _dereq_('loglevel')
 var Config = _dereq_('../lib/config')
@@ -3955,7 +4073,7 @@ ServiceFactory.prototype.getExceptionHandler = function () {
 
 module.exports = ServiceFactory
 
-},{"../backend/opbeat_backend":20,"../exceptions/exceptionHandler":28,"../lib/config":31,"../lib/transport":34,"../lib/utils":35,"loglevel":3}],26:[function(_dereq_,module,exports){
+},{"../backend/opbeat_backend":19,"../exceptions/exceptionHandler":27,"../lib/config":30,"../lib/transport":33,"../lib/utils":34,"loglevel":3}],25:[function(_dereq_,module,exports){
 function Subscription () {
   this.subscriptions = []
 }
@@ -3984,7 +4102,7 @@ Subscription.prototype.applyAll = function (applyTo, applyWith) {
 
 module.exports = Subscription
 
-},{}],27:[function(_dereq_,module,exports){
+},{}],26:[function(_dereq_,module,exports){
 var Promise = _dereq_('es6-promise').Promise
 var utils = _dereq_('../lib/utils')
 var fileFetcher = _dereq_('../lib/fileFetcher')
@@ -4148,7 +4266,7 @@ module.exports = {
 
 }
 
-},{"../lib/fileFetcher":32,"../lib/utils":35,"es6-promise":2}],28:[function(_dereq_,module,exports){
+},{"../lib/fileFetcher":31,"../lib/utils":34,"es6-promise":2}],27:[function(_dereq_,module,exports){
 var Promise = _dereq_('es6-promise').Promise
 var stackTrace = _dereq_('./stacktrace')
 var frames = _dereq_('./frames')
@@ -4222,7 +4340,7 @@ ExceptionHandler.prototype._processError = function processError (error, msg, fi
 
 module.exports = ExceptionHandler
 
-},{"./frames":29,"./stacktrace":30,"es6-promise":2}],29:[function(_dereq_,module,exports){
+},{"./frames":28,"./stacktrace":29,"es6-promise":2}],28:[function(_dereq_,module,exports){
 var Promise = _dereq_('es6-promise').Promise
 
 var logger = _dereq_('../lib/logger')
@@ -4455,7 +4573,7 @@ module.exports = {
 
 }
 
-},{"../lib/config":31,"../lib/logger":33,"../lib/utils":35,"./context":27,"./stacktrace":30,"es6-promise":2}],30:[function(_dereq_,module,exports){
+},{"../lib/config":30,"../lib/logger":32,"../lib/utils":34,"./context":26,"./stacktrace":29,"es6-promise":2}],29:[function(_dereq_,module,exports){
 var ErrorStackParser = _dereq_('error-stack-parser')
 var StackGenerator = _dereq_('stack-generator')
 var Promise = _dereq_('es6-promise').Promise
@@ -4563,7 +4681,7 @@ function normalizeFunctionName (fnName) {
   return fnName
 }
 
-},{"../lib/utils":35,"error-stack-parser":1,"es6-promise":2,"stack-generator":6}],31:[function(_dereq_,module,exports){
+},{"../lib/utils":34,"error-stack-parser":1,"es6-promise":2,"stack-generator":6}],30:[function(_dereq_,module,exports){
 var utils = _dereq_('./utils')
 var Subscription = _dereq_('../common/subscription')
 
@@ -4571,7 +4689,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.1.4',
+    VERSION: 'v3.2.0',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -4686,7 +4804,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.1.4'
+Config.prototype.VERSION = 'v3.2.0'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
@@ -4699,7 +4817,7 @@ Config.prototype.isPlatformSupported = function () {
 
 module.exports = new Config()
 
-},{"../common/subscription":26,"./utils":35}],32:[function(_dereq_,module,exports){
+},{"../common/subscription":25,"./utils":34}],31:[function(_dereq_,module,exports){
 var SimpleCache = _dereq_('simple-lru-cache')
 var transport = _dereq_('./transport')
 
@@ -4719,7 +4837,7 @@ module.exports = {
   }
 }
 
-},{"./transport":34,"simple-lru-cache":4}],33:[function(_dereq_,module,exports){
+},{"./transport":33,"simple-lru-cache":4}],32:[function(_dereq_,module,exports){
 var config = _dereq_('./config')
 
 var logStack = []
@@ -4762,7 +4880,7 @@ module.exports = {
   }
 }
 
-},{"./config":31}],34:[function(_dereq_,module,exports){
+},{"./config":30}],33:[function(_dereq_,module,exports){
 var logger = _dereq_('./logger')
 var config = _dereq_('./config')
 var Promise = _dereq_('es6-promise').Promise
@@ -4841,7 +4959,7 @@ function _makeRequest (url, method, type, data, headers) {
   })
 }
 
-},{"./config":31,"./logger":33,"es6-promise":2}],35:[function(_dereq_,module,exports){
+},{"./config":30,"./logger":32,"es6-promise":2}],34:[function(_dereq_,module,exports){
 var slice = [].slice
 
 module.exports = {
@@ -5078,7 +5196,7 @@ function isFunction (value) {
   return typeof value === 'function'
 }
 
-},{}],36:[function(_dereq_,module,exports){
+},{}],35:[function(_dereq_,module,exports){
 var Promise = _dereq_('es6-promise').Promise
 var frames = _dereq_('../exceptions/frames')
 var traceCache = _dereq_('./traceCache')
@@ -5199,14 +5317,14 @@ Trace.prototype.getTraceStackFrames = function (callback) {
 
 module.exports = Trace
 
-},{"../exceptions/frames":29,"../lib/utils":35,"./traceCache":37,"es6-promise":2}],37:[function(_dereq_,module,exports){
+},{"../exceptions/frames":28,"../lib/utils":34,"./traceCache":36,"es6-promise":2}],36:[function(_dereq_,module,exports){
 var SimpleCache = _dereq_('simple-lru-cache')
 
 module.exports = new SimpleCache({
   'maxSize': 5000
 })
 
-},{"simple-lru-cache":4}],38:[function(_dereq_,module,exports){
+},{"simple-lru-cache":4}],37:[function(_dereq_,module,exports){
 var Trace = _dereq_('./trace')
 var Promise = _dereq_('es6-promise').Promise
 var utils = _dereq_('../lib/utils')
@@ -5399,7 +5517,7 @@ function findLatestTrace (traces) {
 
 module.exports = Transaction
 
-},{"../lib/utils":35,"./trace":36,"es6-promise":2}],39:[function(_dereq_,module,exports){
+},{"../lib/utils":34,"./trace":35,"es6-promise":2}],38:[function(_dereq_,module,exports){
 var Transaction = _dereq_('./transaction')
 var utils = _dereq_('../lib/utils')
 var Subscription = _dereq_('../common/subscription')
@@ -5618,7 +5736,7 @@ TransactionService.prototype.scheduleTransactionSend = function () {
 
 module.exports = TransactionService
 
-},{"../common/subscription":26,"../lib/utils":35,"./transaction":38}],40:[function(_dereq_,module,exports){
+},{"../common/subscription":25,"../lib/utils":34,"./transaction":37}],39:[function(_dereq_,module,exports){
 var Subscription = _dereq_('../common/subscription')
 var patchUtils = _dereq_('../common/patchUtils')
 var opbeatTaskSymbol = patchUtils.opbeatSymbol('taskData')
@@ -5627,7 +5745,6 @@ var urlSympbol = patchUtils.opbeatSymbol('url')
 var methodSymbol = patchUtils.opbeatSymbol('method')
 
 var XMLHttpRequest_send = 'XMLHttpRequest.send'
-var XHR = window.XMLHttpRequest
 
 var opbeatDataSymbol = patchUtils.opbeatSymbol('opbeatData')
 
@@ -5726,7 +5843,7 @@ function ZoneService (zone, logger, config) {
         logger.trace('opbeatData', opbeatData)
         var opbeatTask = opbeatData.task
 
-        if (opbeatTask && task.data.eventName === 'readystatechange' && task.data.target.readyState === XHR.DONE) {
+        if (opbeatTask && task.data.eventName === 'readystatechange' && task.data.target.readyState === task.data.target.DONE) {
           opbeatData.registeredEventListeners['readystatechange'].resolved = true
           spec.onBeforeInvokeTask(opbeatTask)
         } else if (opbeatTask && task.data.eventName === 'load' && 'load' in opbeatData.registeredEventListeners) {
@@ -5808,6 +5925,14 @@ ZoneService.prototype.runOuter = function (fn) {
   return this.outer.run(fn)
 }
 
+ZoneService.prototype.runInOpbeatZone = function runInOpbeatZone (fn, applyThis, applyArgs) {
+  if (this.zone.name === window.Zone.current.name) {
+    return fn.apply(applyThis, applyArgs)
+  } else {
+    return this.zone.run(fn, applyThis, applyArgs)
+  }
+}
+
 module.exports = ZoneService
 
-},{"../common/patchUtils":22,"../common/subscription":26}]},{},[12]);
+},{"../common/patchUtils":21,"../common/subscription":25}]},{},[11]);
