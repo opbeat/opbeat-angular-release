@@ -3122,22 +3122,16 @@ function initialize (serviceContainer) {
   patchCommon(serviceContainer)
 
   function beforeBootstrap (modules) {
-    // We're adding 'ngOpbeat' just before bootstrap, so it doesn't have to be specified in the dependencies
-
-    if (modules && typeof modules.unshift === 'function') {
-      modules.unshift('ngOpbeat')
-    }
     if (!alreadyRegistered) {
-      alreadyRegistered = true
-      registerOpbeatModule(services)
+      alreadyRegistered = registerOpbeatModule(services)
     }
   }
-
+  alreadyRegistered = registerOpbeatModule(services)
   patchAngularBootstrap(services.zoneService, beforeBootstrap)
 }
 
 function registerOpbeatModule (services) {
-  ngOpbeat(services.transactionService, services.logger, services.configService, services.exceptionHandler)
+  return ngOpbeat(services.transactionService, services.logger, services.configService, services.exceptionHandler)
 }
 
 module.exports = initialize
@@ -3243,7 +3237,7 @@ function registerOpbeatModule (transactionService, logger, configService, except
     patchAll($provide, transactionService)
   }
 
-  if (window.angular) {
+  if (window.angular && typeof window.angular.module === 'function') {
     if (!configService.isPlatformSupported()) {
       window.angular.module('ngOpbeat', [])
         .provider('$opbeat', new NgOpbeatProvider(logger, configService, exceptionHandler))
@@ -3256,6 +3250,7 @@ function registerOpbeatModule (transactionService, logger, configService, except
         .run(['$rootScope', moduleRun])
     }
     window.angular.module('opbeat-angular', ['ngOpbeat'])
+    return true
   }
 }
 
@@ -4689,7 +4684,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.2.0',
+    VERSION: 'v3.2.1',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -4804,7 +4799,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.2.0'
+Config.prototype.VERSION = 'v3.2.1'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
