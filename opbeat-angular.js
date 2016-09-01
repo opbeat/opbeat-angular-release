@@ -2106,7 +2106,7 @@ module.exports=Cache
 	                value = this._cancelTaskZS.onCancelTask(this._cancelTaskDlgt, this.zone, targetZone, task);
 	            }
 	            else if (!task.cancelFn) {
-	                throw new Error('Task does not support cancellation, or is already canceled.');
+	                return; // throw new Error('Task does not support cancellation, or is already canceled.');
 	            }
 	            else {
 	                value = task.cancelFn(task);
@@ -2125,7 +2125,7 @@ module.exports=Cache
 	            var prev = counts[type];
 	            var next = counts[type] = prev + count;
 	            if (next < 0) {
-	                throw new Error('More tasks executed then were scheduled.');
+	                return; // throw new Error('More tasks executed then were scheduled.');
 	            }
 	            if (prev == 0 || next == 0) {
 	                var isEmpty = {
@@ -3136,12 +3136,13 @@ function registerOpbeatModule (services) {
 
 module.exports = initialize
 
-},{"../common/patchCommon":20,"./ngOpbeat":10,"./patches/bootstrapPatch":12}],10:[function(_dereq_,module,exports){
+},{"../common/patchCommon":21,"./ngOpbeat":10,"./patches/bootstrapPatch":12}],10:[function(_dereq_,module,exports){
 var patchController = _dereq_('./patches/controllerPatch')
 var patchCompile = _dereq_('./patches/compilePatch')
 var patchRootScope = _dereq_('./patches/rootScopePatch')
 var patchDirectives = _dereq_('./patches/directivesPatch')
 var patchExceptionHandler = _dereq_('./patches/exceptionHandlerPatch')
+var patchInteractions = _dereq_('./patches/interactionsPatch')
 
 function NgOpbeatProvider (logger, configService, exceptionHandler) {
   this.config = function config (properties) {
@@ -3195,6 +3196,7 @@ function patchAll ($provide, transactionService) {
   patchCompile($provide, transactionService)
   patchRootScope($provide, transactionService)
   patchDirectives($provide, transactionService)
+  patchInteractions($provide, transactionService)
 }
 
 function noop () {}
@@ -3256,7 +3258,7 @@ function registerOpbeatModule (transactionService, logger, configService, except
 
 module.exports = registerOpbeatModule
 
-},{"./patches/compilePatch":13,"./patches/controllerPatch":14,"./patches/directivesPatch":15,"./patches/exceptionHandlerPatch":16,"./patches/rootScopePatch":17}],11:[function(_dereq_,module,exports){
+},{"./patches/compilePatch":13,"./patches/controllerPatch":14,"./patches/directivesPatch":15,"./patches/exceptionHandlerPatch":16,"./patches/interactionsPatch":17,"./patches/rootScopePatch":18}],11:[function(_dereq_,module,exports){
 var ServiceContainer = _dereq_('../common/serviceContainer')
 var ServiceFactory = _dereq_('../common/serviceFactory')
 var angularInitializer = _dereq_('./angularInitializer')
@@ -3270,7 +3272,7 @@ function init () {
 
 init()
 
-},{"../common/serviceContainer":23,"../common/serviceFactory":24,"./angularInitializer":9}],12:[function(_dereq_,module,exports){
+},{"../common/serviceContainer":24,"../common/serviceFactory":25,"./angularInitializer":9}],12:[function(_dereq_,module,exports){
 var DEFER_LABEL = 'NG_DEFER_BOOTSTRAP!'
 var deferRegex = new RegExp('^' + DEFER_LABEL + '.*')
 
@@ -3414,7 +3416,7 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{"../../common/patchUtils":21,"../../lib/utils":34}],14:[function(_dereq_,module,exports){
+},{"../../common/patchUtils":22,"../../lib/utils":35}],14:[function(_dereq_,module,exports){
 var utils = _dereq_('../../lib/utils')
 
 function getControllerInfoFromArgs (args) {
@@ -3464,7 +3466,7 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{"../../lib/utils":34}],15:[function(_dereq_,module,exports){
+},{"../../lib/utils":35}],15:[function(_dereq_,module,exports){
 var utils = _dereq_('../../lib/utils')
 module.exports = function ($provide, transactionService) {
   'use strict'
@@ -3526,7 +3528,7 @@ function humanReadableWatchExpression (fn) {
   return fn.toString()
 }
 
-},{"../../lib/utils":34}],16:[function(_dereq_,module,exports){
+},{"../../lib/utils":35}],16:[function(_dereq_,module,exports){
 
 module.exports = function patchExceptionHandler ($provide) {
   $provide.decorator('$exceptionHandler', ['$delegate', '$opbeat', function $ExceptionHandlerDecorator ($delegate, $opbeat) {
@@ -3538,6 +3540,37 @@ module.exports = function patchExceptionHandler ($provide) {
 }
 
 },{}],17:[function(_dereq_,module,exports){
+module.exports = function ($provide, transactionService) {
+  'use strict'
+  function patchEventDirective (delegate, eventName) {
+    var nativeCompile = delegate.compile
+    delegate.compile = function () {
+      var nativeLink = nativeCompile.apply(this, arguments)
+      return function (scope, element, attributes) {
+        var directiveName = attributes.$normalize('ng-' + eventName)
+        var action = attributes[directiveName]
+        element.on(eventName, function (event) {
+          transactionService.startTransaction(directiveName + ': ' + action, 'interaction')
+        })
+        return nativeLink.apply(this, arguments)
+      }
+    }
+  }
+
+  $provide.decorator('ngSubmitDirective', ['$delegate', '$injector', function ($delegate, $injector) {
+    var directive = $delegate[0]
+    patchEventDirective(directive, 'submit')
+    return $delegate
+  }])
+
+  $provide.decorator('ngClickDirective', ['$delegate', '$injector', function ($delegate, $injector) {
+    var ngClick = $delegate[0]
+    patchEventDirective(ngClick, 'click')
+    return $delegate
+  }])
+}
+
+},{}],18:[function(_dereq_,module,exports){
 module.exports = function ($provide, transactionService) {
   $provide.decorator('$rootScope', ['$delegate', '$injector', function ($delegate, $injector) {
     return decorateRootScope($delegate, transactionService)
@@ -3560,7 +3593,7 @@ function decorateRootScope ($delegate, transactionService) {
   return $delegate
 }
 
-},{}],18:[function(_dereq_,module,exports){
+},{}],19:[function(_dereq_,module,exports){
 module.exports = {
   createValidFrames: function createValidFrames (frames) {
     var result = []
@@ -3573,7 +3606,7 @@ module.exports = {
   }
 }
 
-},{}],19:[function(_dereq_,module,exports){
+},{}],20:[function(_dereq_,module,exports){
 var backendUtils = _dereq_('./backend_utils')
 module.exports = OpbeatBackend
 function OpbeatBackend (transport, logger, config) {
@@ -3842,7 +3875,7 @@ function traceGroupingKey (trace) {
   ].join('-')
 }
 
-},{"./backend_utils":18}],20:[function(_dereq_,module,exports){
+},{"./backend_utils":19}],21:[function(_dereq_,module,exports){
 var patchXMLHttpRequest = _dereq_('./patches/xhrPatch')
 
 function patchCommon (serviceContainer) {
@@ -3851,7 +3884,7 @@ function patchCommon (serviceContainer) {
 
 module.exports = patchCommon
 
-},{"./patches/xhrPatch":22}],21:[function(_dereq_,module,exports){
+},{"./patches/xhrPatch":23}],22:[function(_dereq_,module,exports){
 module.exports = {
   patchFunction: function patchModule (delegate, options) {},
   _copyProperties: function _copyProperties (source, target) {
@@ -3926,7 +3959,7 @@ function createNamedFn (name, delegate) {
   }
 }
 
-},{}],22:[function(_dereq_,module,exports){
+},{}],23:[function(_dereq_,module,exports){
 var patchUtils = _dereq_('../patchUtils')
 
 var urlSympbol = patchUtils.opbeatSymbol('url')
@@ -3944,7 +3977,7 @@ module.exports = function patchXMLHttpRequest () {
   })
 }
 
-},{"../patchUtils":21}],23:[function(_dereq_,module,exports){
+},{"../patchUtils":22}],24:[function(_dereq_,module,exports){
 var TransactionService = _dereq_('../transaction/transaction_service')
 
 var utils = _dereq_('../lib/utils')
@@ -3997,7 +4030,7 @@ ServiceContainer.prototype.createZoneService = function () {
 
 module.exports = ServiceContainer
 
-},{"../lib/utils":34,"../transaction/transaction_service":38,"../transaction/zone_service":39,"zone.js":8}],24:[function(_dereq_,module,exports){
+},{"../lib/utils":35,"../transaction/transaction_service":39,"../transaction/zone_service":40,"zone.js":8}],25:[function(_dereq_,module,exports){
 var OpbeatBackend = _dereq_('../backend/opbeat_backend')
 var Logger = _dereq_('loglevel')
 var Config = _dereq_('../lib/config')
@@ -4068,7 +4101,7 @@ ServiceFactory.prototype.getExceptionHandler = function () {
 
 module.exports = ServiceFactory
 
-},{"../backend/opbeat_backend":19,"../exceptions/exceptionHandler":27,"../lib/config":30,"../lib/transport":33,"../lib/utils":34,"loglevel":3}],25:[function(_dereq_,module,exports){
+},{"../backend/opbeat_backend":20,"../exceptions/exceptionHandler":28,"../lib/config":31,"../lib/transport":34,"../lib/utils":35,"loglevel":3}],26:[function(_dereq_,module,exports){
 function Subscription () {
   this.subscriptions = []
 }
@@ -4097,7 +4130,7 @@ Subscription.prototype.applyAll = function (applyTo, applyWith) {
 
 module.exports = Subscription
 
-},{}],26:[function(_dereq_,module,exports){
+},{}],27:[function(_dereq_,module,exports){
 var Promise = _dereq_('es6-promise').Promise
 var utils = _dereq_('../lib/utils')
 var fileFetcher = _dereq_('../lib/fileFetcher')
@@ -4261,7 +4294,7 @@ module.exports = {
 
 }
 
-},{"../lib/fileFetcher":31,"../lib/utils":34,"es6-promise":2}],27:[function(_dereq_,module,exports){
+},{"../lib/fileFetcher":32,"../lib/utils":35,"es6-promise":2}],28:[function(_dereq_,module,exports){
 var Promise = _dereq_('es6-promise').Promise
 var stackTrace = _dereq_('./stacktrace')
 var frames = _dereq_('./frames')
@@ -4335,7 +4368,7 @@ ExceptionHandler.prototype._processError = function processError (error, msg, fi
 
 module.exports = ExceptionHandler
 
-},{"./frames":28,"./stacktrace":29,"es6-promise":2}],28:[function(_dereq_,module,exports){
+},{"./frames":29,"./stacktrace":30,"es6-promise":2}],29:[function(_dereq_,module,exports){
 var Promise = _dereq_('es6-promise').Promise
 
 var logger = _dereq_('../lib/logger')
@@ -4568,7 +4601,7 @@ module.exports = {
 
 }
 
-},{"../lib/config":30,"../lib/logger":32,"../lib/utils":34,"./context":26,"./stacktrace":29,"es6-promise":2}],29:[function(_dereq_,module,exports){
+},{"../lib/config":31,"../lib/logger":33,"../lib/utils":35,"./context":27,"./stacktrace":30,"es6-promise":2}],30:[function(_dereq_,module,exports){
 var ErrorStackParser = _dereq_('error-stack-parser')
 var StackGenerator = _dereq_('stack-generator')
 var Promise = _dereq_('es6-promise').Promise
@@ -4676,7 +4709,7 @@ function normalizeFunctionName (fnName) {
   return fnName
 }
 
-},{"../lib/utils":34,"error-stack-parser":1,"es6-promise":2,"stack-generator":6}],30:[function(_dereq_,module,exports){
+},{"../lib/utils":35,"error-stack-parser":1,"es6-promise":2,"stack-generator":6}],31:[function(_dereq_,module,exports){
 var utils = _dereq_('./utils')
 var Subscription = _dereq_('../common/subscription')
 
@@ -4684,7 +4717,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.2.1',
+    VERSION: 'v3.2.2',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -4699,7 +4732,8 @@ function Config () {
       enable: true,
       enableStackFrames: false,
       groupSimilarTraces: true,
-      similarTraceThreshold: 0.05
+      similarTraceThreshold: 0.05,
+      captureInteractions: false
     },
     libraryPathPattern: '(node_modules|bower_components|webpack)',
     context: {
@@ -4799,20 +4833,20 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.2.1'
+Config.prototype.VERSION = 'v3.2.2'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
-  typeof JSON.stringify === 'function' &&
-  typeof Function.bind === 'function' &&
-  window.performance &&
-  typeof window.performance.now === 'function' &&
-  utils.isCORSSupported()
+    typeof JSON.stringify === 'function' &&
+    typeof Function.bind === 'function' &&
+    window.performance &&
+    typeof window.performance.now === 'function' &&
+    utils.isCORSSupported()
 }
 
 module.exports = new Config()
 
-},{"../common/subscription":25,"./utils":34}],31:[function(_dereq_,module,exports){
+},{"../common/subscription":26,"./utils":35}],32:[function(_dereq_,module,exports){
 var SimpleCache = _dereq_('simple-lru-cache')
 var transport = _dereq_('./transport')
 
@@ -4832,7 +4866,7 @@ module.exports = {
   }
 }
 
-},{"./transport":33,"simple-lru-cache":4}],32:[function(_dereq_,module,exports){
+},{"./transport":34,"simple-lru-cache":4}],33:[function(_dereq_,module,exports){
 var config = _dereq_('./config')
 
 var logStack = []
@@ -4875,7 +4909,7 @@ module.exports = {
   }
 }
 
-},{"./config":30}],33:[function(_dereq_,module,exports){
+},{"./config":31}],34:[function(_dereq_,module,exports){
 var logger = _dereq_('./logger')
 var config = _dereq_('./config')
 var Promise = _dereq_('es6-promise').Promise
@@ -4954,7 +4988,7 @@ function _makeRequest (url, method, type, data, headers) {
   })
 }
 
-},{"./config":30,"./logger":32,"es6-promise":2}],34:[function(_dereq_,module,exports){
+},{"./config":31,"./logger":33,"es6-promise":2}],35:[function(_dereq_,module,exports){
 var slice = [].slice
 
 module.exports = {
@@ -5191,7 +5225,7 @@ function isFunction (value) {
   return typeof value === 'function'
 }
 
-},{}],35:[function(_dereq_,module,exports){
+},{}],36:[function(_dereq_,module,exports){
 var Promise = _dereq_('es6-promise').Promise
 var frames = _dereq_('../exceptions/frames')
 var traceCache = _dereq_('./traceCache')
@@ -5312,14 +5346,14 @@ Trace.prototype.getTraceStackFrames = function (callback) {
 
 module.exports = Trace
 
-},{"../exceptions/frames":28,"../lib/utils":34,"./traceCache":36,"es6-promise":2}],36:[function(_dereq_,module,exports){
+},{"../exceptions/frames":29,"../lib/utils":35,"./traceCache":37,"es6-promise":2}],37:[function(_dereq_,module,exports){
 var SimpleCache = _dereq_('simple-lru-cache')
 
 module.exports = new SimpleCache({
   'maxSize': 5000
 })
 
-},{"simple-lru-cache":4}],37:[function(_dereq_,module,exports){
+},{"simple-lru-cache":4}],38:[function(_dereq_,module,exports){
 var Trace = _dereq_('./trace')
 var Promise = _dereq_('es6-promise').Promise
 var utils = _dereq_('../lib/utils')
@@ -5512,7 +5546,7 @@ function findLatestTrace (traces) {
 
 module.exports = Transaction
 
-},{"../lib/utils":34,"./trace":35,"es6-promise":2}],38:[function(_dereq_,module,exports){
+},{"../lib/utils":35,"./trace":36,"es6-promise":2}],39:[function(_dereq_,module,exports){
 var Transaction = _dereq_('./transaction')
 var utils = _dereq_('../lib/utils')
 var Subscription = _dereq_('../common/subscription')
@@ -5610,6 +5644,10 @@ TransactionService.prototype.startTransaction = function (name, type) {
 
   var perfOptions = this._config.get('performance')
   if (!perfOptions.enable) {
+    return
+  }
+
+  if (type === 'interaction' && !perfOptions.captureInteractions) {
     return
   }
 
@@ -5731,7 +5769,7 @@ TransactionService.prototype.scheduleTransactionSend = function () {
 
 module.exports = TransactionService
 
-},{"../common/subscription":25,"../lib/utils":34,"./transaction":37}],39:[function(_dereq_,module,exports){
+},{"../common/subscription":26,"../lib/utils":35,"./transaction":38}],40:[function(_dereq_,module,exports){
 var Subscription = _dereq_('../common/subscription')
 var patchUtils = _dereq_('../common/patchUtils')
 var opbeatTaskSymbol = patchUtils.opbeatSymbol('taskData')
@@ -5930,4 +5968,4 @@ ZoneService.prototype.runInOpbeatZone = function runInOpbeatZone (fn, applyThis,
 
 module.exports = ZoneService
 
-},{"../common/patchUtils":21,"../common/subscription":25}]},{},[11]);
+},{"../common/patchUtils":22,"../common/subscription":26}]},{},[11]);
