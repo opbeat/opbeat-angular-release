@@ -3205,6 +3205,12 @@ function registerOpbeatModule (transactionService, logger, configService, except
   function moduleRun ($rootScope) {
     configService.set('isInstalled', true)
     configService.set('opbeatAgentName', 'opbeat-angular')
+    configService.set('platform.framework', 'angular/' + window.angular.version.full)
+
+    var platform = getPlatform()
+    if (platform) {
+      configService.set('platform.platform', platform)
+    }
 
     logger.debug('Agent:', configService.getAgentName())
 
@@ -3237,6 +3243,15 @@ function registerOpbeatModule (transactionService, logger, configService, except
 
   function moduleConfig ($provide) {
     patchAll($provide, transactionService)
+  }
+
+  function getPlatform () {
+    var isCordovaApp = (typeof window.cordova !== 'undefined')
+    if (isCordovaApp) {
+      return 'cordova'
+    } else {
+      return 'browser'
+    }
   }
 
   if (window.angular && typeof window.angular.module === 'function') {
@@ -3608,6 +3623,7 @@ module.exports = {
 
 },{}],20:[function(_dereq_,module,exports){
 var backendUtils = _dereq_('./backend_utils')
+var utils = _dereq_('../lib/utils')
 module.exports = OpbeatBackend
 function OpbeatBackend (transport, logger, config) {
   this._logger = logger
@@ -3617,10 +3633,25 @@ function OpbeatBackend (transport, logger, config) {
 OpbeatBackend.prototype.sendError = function (errorData) {
   if (this._config.isValid()) {
     errorData.stacktrace.frames = backendUtils.createValidFrames(errorData.stacktrace.frames)
-    this._transport.sendError(errorData)
+    var headers = this.getHeaders()
+    this._transport.sendError(errorData, headers)
   } else {
     this._logger.debug('Config is not valid')
   }
+}
+
+OpbeatBackend.prototype.getHeaders = function () {
+  var platform = this._config.get('platform')
+  var headers = {
+    'X-Opbeat-Client': this._config.getAgentName()
+  }
+  if (platform) {
+    var pl = []
+    if (platform.platform) pl.push('platform=' + platform.platform)
+    if (platform.framework) pl.push('framework=' + platform.framework)
+    if (pl.length > 0) headers['X-Opbeat-Platform'] = pl.join(' ')
+  }
+  return headers
 }
 
 OpbeatBackend.prototype.groupSmallContinuouslySimilarTraces = function (transaction, threshold) {
@@ -3676,6 +3707,9 @@ OpbeatBackend.prototype.checkBrowserResponsiveness = function (transaction, inte
 OpbeatBackend.prototype.sendTransactions = function (transactionList) {
   var opbeatBackend = this
   if (this._config.isValid()) {
+    var browserResponsivenessInterval = opbeatBackend._config.get('performance.browserResponsivenessInterval')
+    var checkBrowserResponsiveness = opbeatBackend._config.get('performance.checkBrowserResponsiveness')
+
     transactionList.forEach(function (transaction) {
       transaction.traces.sort(function (traceA, traceB) {
         return traceA._start - traceB._start
@@ -3685,18 +3719,37 @@ OpbeatBackend.prototype.sendTransactions = function (transactionList) {
         var similarTraceThreshold = opbeatBackend._config.get('performance.similarTraceThreshold')
         transaction.traces = opbeatBackend.groupSmallContinuouslySimilarTraces(transaction, similarTraceThreshold)
       }
-    })
-    var filterTransactions = transactionList.filter(function (tr) {
-      var checkBrowserResponsiveness = opbeatBackend._config.get('performance.checkBrowserResponsiveness')
+      var context = opbeatBackend._config.get('context')
+      if (context) {
+        transaction.contextInfo = utils.merge(transaction.contextInfo || {}, context)
+      }
 
+      var ctx = transaction.contextInfo
+      if (ctx.browser && ctx.browser.location) {
+        ctx.browser.location = ctx.browser.location.substring(0, 511)
+        var protocol = ctx.browser.location.split('://')[0]
+        var acceptedProtocols = ['http', 'https', 'file']
+        if (acceptedProtocols.indexOf(protocol) < 0) {
+          delete ctx.browser.location
+        }
+      }
       if (checkBrowserResponsiveness) {
-        var interval = opbeatBackend._config.get('performance.browserResponsivenessInterval')
+        if (!ctx.debug) {
+          ctx.debug = {}
+        }
+        ctx.debug.browserResponsivenessCounter = transaction.browserResponsivenessCounter
+        ctx.debug.browserResponsivenessInterval = browserResponsivenessInterval
+      }
+    })
+
+    var filterTransactions = transactionList.filter(function (tr) {
+      if (checkBrowserResponsiveness) {
         var buffer = opbeatBackend._config.get('performance.browserResponsivenessBuffer')
 
         var duration = tr._rootTrace.duration()
-        var wasBrowserResponsive = opbeatBackend.checkBrowserResponsiveness(tr, interval, buffer)
+        var wasBrowserResponsive = opbeatBackend.checkBrowserResponsiveness(tr, browserResponsivenessInterval, buffer)
         if (!wasBrowserResponsive) {
-          opbeatBackend._logger.debug('Transaction was discarded! browser was not responsive enough during the transaction.', ' duration:', duration, ' browserResponsivenessCounter:', tr.browserResponsivenessCounter, 'interval:', interval)
+          opbeatBackend._logger.debug('Transaction was discarded! browser was not responsive enough during the transaction.', ' duration:', duration, ' browserResponsivenessCounter:', tr.browserResponsivenessCounter, 'interval:', browserResponsivenessInterval)
           return false
         }
       }
@@ -3705,7 +3758,8 @@ OpbeatBackend.prototype.sendTransactions = function (transactionList) {
 
     if (filterTransactions.length > 0) {
       var formatedTransactions = this._formatTransactions(filterTransactions)
-      return this._transport.sendTransaction(formatedTransactions)
+      var headers = this.getHeaders()
+      return this._transport.sendTransaction(formatedTransactions, headers)
     }
   } else {
     this._logger.debug('Config is not valid')
@@ -3794,6 +3848,9 @@ OpbeatBackend.prototype.getRawGroupedTracesTimings = function getRawGroupedTrace
       }
     })
 
+    if (transaction.contextInfo && Object.keys(transaction.contextInfo).length > 0) {
+      data.push(transaction.contextInfo)
+    }
     return data
   })
 }
@@ -3875,7 +3932,7 @@ function traceGroupingKey (trace) {
   ].join('-')
 }
 
-},{"./backend_utils":19}],21:[function(_dereq_,module,exports){
+},{"../lib/utils":35,"./backend_utils":19}],21:[function(_dereq_,module,exports){
 var patchXMLHttpRequest = _dereq_('./patches/xhrPatch')
 
 function patchCommon (serviceContainer) {
@@ -4525,7 +4582,7 @@ module.exports = {
         url: window.location.href
       },
       stacktrace: stacktrace,
-      user: userContext,
+      user: userContext || {},
       level: null,
       logger: null,
       machine: null
@@ -4717,7 +4774,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.2.2',
+    VERSION: 'v3.3.0',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -4736,10 +4793,8 @@ function Config () {
       captureInteractions: false
     },
     libraryPathPattern: '(node_modules|bower_components|webpack)',
-    context: {
-      user: {},
-      extra: null
-    }
+    context: {},
+    platform: {}
   }
 
   this._changeSubscription = new Subscription()
@@ -4752,7 +4807,7 @@ Config.prototype.init = function () {
 
 Config.prototype.get = function (key) {
   return utils.arrayReduce(key.split('.'), function (obj, i) {
-    return obj[i]
+    return obj && obj[i]
   }, this.config)
 }
 
@@ -4833,7 +4888,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.2.2'
+Config.prototype.VERSION = 'v3.3.0'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
@@ -4915,12 +4970,12 @@ var config = _dereq_('./config')
 var Promise = _dereq_('es6-promise').Promise
 
 module.exports = {
-  sendError: function (data) {
-    return _sendToOpbeat('errors', data)
+  sendError: function (data, headers) {
+    return _sendToOpbeat('errors', data, headers)
   },
 
-  sendTransaction: function (data) {
-    return _sendToOpbeat('transactions', data)
+  sendTransaction: function (data, headers) {
+    return _sendToOpbeat('transactions', data, headers)
   },
 
   getFile: function (fileUrl) {
@@ -4928,14 +4983,10 @@ module.exports = {
   }
 }
 
-function _sendToOpbeat (endpoint, data) {
+function _sendToOpbeat (endpoint, data, headers) {
   logger.log('opbeat.transport.sendToOpbeat', data)
 
   var url = 'https://' + config.get('apiHost') + '/api/v1/organizations/' + config.get('orgId') + '/apps/' + config.get('appId') + '/client-side/' + endpoint + '/'
-
-  var headers = {
-    'X-Opbeat-Client': config.getAgentName()
-  }
 
   return _makeRequest(url, 'POST', 'JSON', data, headers)
 }
@@ -5389,8 +5440,12 @@ var Transaction = function (name, type, options) {
 
   this.duration = this._rootTrace.duration.bind(this._rootTrace)
   this.nextId = 0
-
-  this.loadCounter = 0
+  this.contextInfo = {
+    debug: {},
+    browser: {
+      location: window.location.href
+    }
+  }
 }
 
 Transaction.prototype.startTrace = function (signature, type, options) {
@@ -5423,8 +5478,8 @@ Transaction.prototype.recordEvent = function (e) {
 
 Transaction.prototype.isFinished = function () {
   return (
-  Object.keys(this._scheduledTasks).length === 0 &&
-  Object.keys(this._activeTraces).length === 0)
+    Object.keys(this._scheduledTasks).length === 0 &&
+    Object.keys(this._activeTraces).length === 0)
 }
 
 Transaction.prototype.detectFinish = function () {
@@ -5451,6 +5506,7 @@ Transaction.prototype.addTask = function (taskId) {
 }
 
 Transaction.prototype.removeTask = function (taskId) {
+  this.contextInfo.debug.lastRemovedTask = taskId
   delete this._scheduledTasks[taskId]
 }
 
