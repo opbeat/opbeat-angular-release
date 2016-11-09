@@ -1,4 +1,3262 @@
 (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(_dereq_,module,exports){
+(function (define){
+(function(root, factory) {
+    'use strict';
+    // Universal Module Definition (UMD) to support AMD, CommonJS/Node.js, Rhino, and browsers.
+
+    /* istanbul ignore next */
+    if (typeof define === 'function' && define.amd) {
+        define('error-stack-parser', ['stackframe'], factory);
+    } else if (typeof exports === 'object') {
+        module.exports = factory(_dereq_('stackframe'));
+    } else {
+        root.ErrorStackParser = factory(root.StackFrame);
+    }
+}(this, function ErrorStackParser(StackFrame) {
+    'use strict';
+
+    var FIREFOX_SAFARI_STACK_REGEXP = /(^|@)\S+\:\d+/;
+    var CHROME_IE_STACK_REGEXP = /^\s*at .*(\S+\:\d+|\(native\))/m;
+    var SAFARI_NATIVE_CODE_REGEXP = /^(eval@)?(\[native code\])?$/;
+
+    function _map(array, fn, thisArg) {
+        if (typeof Array.prototype.map === 'function') {
+            return array.map(fn, thisArg);
+        } else {
+            var output = new Array(array.length);
+            for (var i = 0; i < array.length; i++) {
+                output[i] = fn.call(thisArg, array[i]);
+            }
+            return output;
+        }
+    }
+
+    function _filter(array, fn, thisArg) {
+        if (typeof Array.prototype.filter === 'function') {
+            return array.filter(fn, thisArg);
+        } else {
+            var output = [];
+            for (var i = 0; i < array.length; i++) {
+                if (fn.call(thisArg, array[i])) {
+                    output.push(array[i]);
+                }
+            }
+            return output;
+        }
+    }
+
+    function _indexOf(array, target) {
+        if (typeof Array.prototype.indexOf === 'function') {
+            return array.indexOf(target);
+        } else {
+            for (var i = 0; i < array.length; i++) {
+                if (array[i] === target) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+    }
+
+    return {
+        /**
+         * Given an Error object, extract the most information from it.
+         *
+         * @param {Error} error object
+         * @return {Array} of StackFrames
+         */
+        parse: function ErrorStackParser$$parse(error) {
+            if (typeof error.stacktrace !== 'undefined' || typeof error['opera#sourceloc'] !== 'undefined') {
+                return this.parseOpera(error);
+            } else if (error.stack && error.stack.match(CHROME_IE_STACK_REGEXP)) {
+                return this.parseV8OrIE(error);
+            } else if (error.stack) {
+                return this.parseFFOrSafari(error);
+            } else {
+                throw new Error('Cannot parse given Error object');
+            }
+        },
+
+        // Separate line and column numbers from a string of the form: (URI:Line:Column)
+        extractLocation: function ErrorStackParser$$extractLocation(urlLike) {
+            // Fail-fast but return locations like "(native)"
+            if (urlLike.indexOf(':') === -1) {
+                return [urlLike];
+            }
+
+            var regExp = /(.+?)(?:\:(\d+))?(?:\:(\d+))?$/;
+            var parts = regExp.exec(urlLike.replace(/[\(\)]/g, ''));
+            return [parts[1], parts[2] || undefined, parts[3] || undefined];
+        },
+
+        parseV8OrIE: function ErrorStackParser$$parseV8OrIE(error) {
+            var filtered = _filter(error.stack.split('\n'), function(line) {
+                return !!line.match(CHROME_IE_STACK_REGEXP);
+            }, this);
+
+            return _map(filtered, function(line) {
+                if (line.indexOf('(eval ') > -1) {
+                    // Throw away eval information until we implement stacktrace.js/stackframe#8
+                    line = line.replace(/eval code/g, 'eval').replace(/(\(eval at [^\()]*)|(\)\,.*$)/g, '');
+                }
+                var tokens = line.replace(/^\s+/, '').replace(/\(eval code/g, '(').split(/\s+/).slice(1);
+                var locationParts = this.extractLocation(tokens.pop());
+                var functionName = tokens.join(' ') || undefined;
+                var fileName = _indexOf(['eval', '<anonymous>'], locationParts[0]) > -1 ? undefined : locationParts[0];
+
+                return new StackFrame(functionName, undefined, fileName, locationParts[1], locationParts[2], line);
+            }, this);
+        },
+
+        parseFFOrSafari: function ErrorStackParser$$parseFFOrSafari(error) {
+            var filtered = _filter(error.stack.split('\n'), function(line) {
+                return !line.match(SAFARI_NATIVE_CODE_REGEXP);
+            }, this);
+
+            return _map(filtered, function(line) {
+                // Throw away eval information until we implement stacktrace.js/stackframe#8
+                if (line.indexOf(' > eval') > -1) {
+                    line = line.replace(/ line (\d+)(?: > eval line \d+)* > eval\:\d+\:\d+/g, ':$1');
+                }
+
+                if (line.indexOf('@') === -1 && line.indexOf(':') === -1) {
+                    // Safari eval frames only have function names and nothing else
+                    return new StackFrame(line);
+                } else {
+                    var tokens = line.split('@');
+                    var locationParts = this.extractLocation(tokens.pop());
+                    var functionName = tokens.join('@') || undefined;
+                    return new StackFrame(functionName,
+                        undefined,
+                        locationParts[0],
+                        locationParts[1],
+                        locationParts[2],
+                        line);
+                }
+            }, this);
+        },
+
+        parseOpera: function ErrorStackParser$$parseOpera(e) {
+            if (!e.stacktrace || (e.message.indexOf('\n') > -1 &&
+                e.message.split('\n').length > e.stacktrace.split('\n').length)) {
+                return this.parseOpera9(e);
+            } else if (!e.stack) {
+                return this.parseOpera10(e);
+            } else {
+                return this.parseOpera11(e);
+            }
+        },
+
+        parseOpera9: function ErrorStackParser$$parseOpera9(e) {
+            var lineRE = /Line (\d+).*script (?:in )?(\S+)/i;
+            var lines = e.message.split('\n');
+            var result = [];
+
+            for (var i = 2, len = lines.length; i < len; i += 2) {
+                var match = lineRE.exec(lines[i]);
+                if (match) {
+                    result.push(new StackFrame(undefined, undefined, match[2], match[1], undefined, lines[i]));
+                }
+            }
+
+            return result;
+        },
+
+        parseOpera10: function ErrorStackParser$$parseOpera10(e) {
+            var lineRE = /Line (\d+).*script (?:in )?(\S+)(?:: In function (\S+))?$/i;
+            var lines = e.stacktrace.split('\n');
+            var result = [];
+
+            for (var i = 0, len = lines.length; i < len; i += 2) {
+                var match = lineRE.exec(lines[i]);
+                if (match) {
+                    result.push(
+                        new StackFrame(
+                            match[3] || undefined,
+                            undefined,
+                            match[2],
+                            match[1],
+                            undefined,
+                            lines[i]
+                        )
+                    );
+                }
+            }
+
+            return result;
+        },
+
+        // Opera 10.65+ Error.stack very similar to FF/Safari
+        parseOpera11: function ErrorStackParser$$parseOpera11(error) {
+            var filtered = _filter(error.stack.split('\n'), function(line) {
+                return !!line.match(FIREFOX_SAFARI_STACK_REGEXP) && !line.match(/^Error created at/);
+            }, this);
+
+            return _map(filtered, function(line) {
+                var tokens = line.split('@');
+                var locationParts = this.extractLocation(tokens.pop());
+                var functionCall = (tokens.shift() || '');
+                var functionName = functionCall
+                        .replace(/<anonymous function(: (\w+))?>/, '$2')
+                        .replace(/\([^\)]*\)/g, '') || undefined;
+                var argsRaw;
+                if (functionCall.match(/\(([^\)]*)\)/)) {
+                    argsRaw = functionCall.replace(/^[^\(]+\(([^\)]*)\)$/, '$1');
+                }
+                var args = (argsRaw === undefined || argsRaw === '[arguments not available]') ?
+                    undefined : argsRaw.split(',');
+                return new StackFrame(
+                    functionName,
+                    args,
+                    locationParts[0],
+                    locationParts[1],
+                    locationParts[2],
+                    line);
+            }, this);
+        }
+    };
+}));
+
+
+}).call(this,undefined)
+},{"stackframe":30}],2:[function(_dereq_,module,exports){
+(function (define){
+/*
+* loglevel - https://github.com/pimterry/loglevel
+*
+* Copyright (c) 2013 Tim Perry
+* Licensed under the MIT license.
+*/
+(function (root, definition) {
+    "use strict";
+    if (typeof define === 'function' && define.amd) {
+        define(definition);
+    } else if (typeof module === 'object' && module.exports) {
+        module.exports = definition();
+    } else {
+        root.log = definition();
+    }
+}(this, function () {
+    "use strict";
+    var noop = function() {};
+    var undefinedType = "undefined";
+
+    function realMethod(methodName) {
+        if (typeof console === undefinedType) {
+            return false; // We can't build a real method without a console to log to
+        } else if (console[methodName] !== undefined) {
+            return bindMethod(console, methodName);
+        } else if (console.log !== undefined) {
+            return bindMethod(console, 'log');
+        } else {
+            return noop;
+        }
+    }
+
+    function bindMethod(obj, methodName) {
+        var method = obj[methodName];
+        if (typeof method.bind === 'function') {
+            return method.bind(obj);
+        } else {
+            try {
+                return Function.prototype.bind.call(method, obj);
+            } catch (e) {
+                // Missing bind shim or IE8 + Modernizr, fallback to wrapping
+                return function() {
+                    return Function.prototype.apply.apply(method, [obj, arguments]);
+                };
+            }
+        }
+    }
+
+    // these private functions always need `this` to be set properly
+
+    function enableLoggingWhenConsoleArrives(methodName, level, loggerName) {
+        return function () {
+            if (typeof console !== undefinedType) {
+                replaceLoggingMethods.call(this, level, loggerName);
+                this[methodName].apply(this, arguments);
+            }
+        };
+    }
+
+    function replaceLoggingMethods(level, loggerName) {
+        /*jshint validthis:true */
+        for (var i = 0; i < logMethods.length; i++) {
+            var methodName = logMethods[i];
+            this[methodName] = (i < level) ?
+                noop :
+                this.methodFactory(methodName, level, loggerName);
+        }
+    }
+
+    function defaultMethodFactory(methodName, level, loggerName) {
+        /*jshint validthis:true */
+        return realMethod(methodName) ||
+               enableLoggingWhenConsoleArrives.apply(this, arguments);
+    }
+
+    var logMethods = [
+        "trace",
+        "debug",
+        "info",
+        "warn",
+        "error"
+    ];
+
+    function Logger(name, defaultLevel, factory) {
+      var self = this;
+      var currentLevel;
+      var storageKey = "loglevel";
+      if (name) {
+        storageKey += ":" + name;
+      }
+
+      function persistLevelIfPossible(levelNum) {
+          var levelName = (logMethods[levelNum] || 'silent').toUpperCase();
+
+          // Use localStorage if available
+          try {
+              window.localStorage[storageKey] = levelName;
+              return;
+          } catch (ignore) {}
+
+          // Use session cookie as fallback
+          try {
+              window.document.cookie =
+                encodeURIComponent(storageKey) + "=" + levelName + ";";
+          } catch (ignore) {}
+      }
+
+      function getPersistedLevel() {
+          var storedLevel;
+
+          try {
+              storedLevel = window.localStorage[storageKey];
+          } catch (ignore) {}
+
+          if (typeof storedLevel === undefinedType) {
+              try {
+                  var cookie = window.document.cookie;
+                  var location = cookie.indexOf(
+                      encodeURIComponent(storageKey) + "=");
+                  if (location) {
+                      storedLevel = /^([^;]+)/.exec(cookie.slice(location))[1];
+                  }
+              } catch (ignore) {}
+          }
+
+          // If the stored level is not valid, treat it as if nothing was stored.
+          if (self.levels[storedLevel] === undefined) {
+              storedLevel = undefined;
+          }
+
+          return storedLevel;
+      }
+
+      /*
+       *
+       * Public API
+       *
+       */
+
+      self.levels = { "TRACE": 0, "DEBUG": 1, "INFO": 2, "WARN": 3,
+          "ERROR": 4, "SILENT": 5};
+
+      self.methodFactory = factory || defaultMethodFactory;
+
+      self.getLevel = function () {
+          return currentLevel;
+      };
+
+      self.setLevel = function (level, persist) {
+          if (typeof level === "string" && self.levels[level.toUpperCase()] !== undefined) {
+              level = self.levels[level.toUpperCase()];
+          }
+          if (typeof level === "number" && level >= 0 && level <= self.levels.SILENT) {
+              currentLevel = level;
+              if (persist !== false) {  // defaults to true
+                  persistLevelIfPossible(level);
+              }
+              replaceLoggingMethods.call(self, level, name);
+              if (typeof console === undefinedType && level < self.levels.SILENT) {
+                  return "No console available for logging";
+              }
+          } else {
+              throw "log.setLevel() called with invalid level: " + level;
+          }
+      };
+
+      self.setDefaultLevel = function (level) {
+          if (!getPersistedLevel()) {
+              self.setLevel(level, false);
+          }
+      };
+
+      self.enableAll = function(persist) {
+          self.setLevel(self.levels.TRACE, persist);
+      };
+
+      self.disableAll = function(persist) {
+          self.setLevel(self.levels.SILENT, persist);
+      };
+
+      // Initialize with the right level
+      var initialLevel = getPersistedLevel();
+      if (initialLevel == null) {
+          initialLevel = defaultLevel == null ? "WARN" : defaultLevel;
+      }
+      self.setLevel(initialLevel, false);
+    }
+
+    /*
+     *
+     * Package-level API
+     *
+     */
+
+    var defaultLogger = new Logger();
+
+    var _loggersByName = {};
+    defaultLogger.getLogger = function getLogger(name) {
+        if (typeof name !== "string" || name === "") {
+          throw new TypeError("You must supply a name when creating a logger.");
+        }
+
+        var logger = _loggersByName[name];
+        if (!logger) {
+          logger = _loggersByName[name] = new Logger(
+            name, defaultLogger.getLevel(), defaultLogger.methodFactory);
+        }
+        return logger;
+    };
+
+    // Grab the current global log variable in case of overwrite
+    var _log = (typeof window !== undefinedType) ? window.log : undefined;
+    defaultLogger.noConflict = function() {
+        if (typeof window !== undefinedType &&
+               window.log === defaultLogger) {
+            window.log = _log;
+        }
+
+        return defaultLogger;
+    };
+
+    return defaultLogger;
+}));
+
+}).call(this,undefined)
+},{}],3:[function(_dereq_,module,exports){
+module.exports = {
+  createValidFrames: function createValidFrames (frames) {
+    var result = []
+    if (Array.isArray(frames)) {
+      result = frames.filter(function (f) {
+        return (typeof f['filename'] !== 'undefined' && typeof f['lineno'] !== 'undefined')
+      })
+    }
+    return result
+  }
+}
+
+},{}],4:[function(_dereq_,module,exports){
+var backendUtils = _dereq_('./backend_utils')
+var utils = _dereq_('../lib/utils')
+module.exports = OpbeatBackend
+function OpbeatBackend (transport, logger, config) {
+  this._logger = logger
+  this._transport = transport
+  this._config = config
+}
+OpbeatBackend.prototype.sendError = function (errorData) {
+  if (this._config.isValid()) {
+    errorData.stacktrace.frames = backendUtils.createValidFrames(errorData.stacktrace.frames)
+    var headers = this.getHeaders()
+    this._transport.sendError(errorData, headers)
+  } else {
+    this._logger.debug('Config is not valid')
+  }
+}
+
+OpbeatBackend.prototype.getHeaders = function () {
+  var platform = this._config.get('platform')
+  var headers = {
+    'X-Opbeat-Client': this._config.getAgentName()
+  }
+  if (platform) {
+    var pl = []
+    if (platform.platform) pl.push('platform=' + platform.platform)
+    if (platform.framework) pl.push('framework=' + platform.framework)
+    if (pl.length > 0) headers['X-Opbeat-Platform'] = pl.join(' ')
+  }
+  return headers
+}
+
+OpbeatBackend.prototype.groupSmallContinuouslySimilarTraces = function (transaction, threshold) {
+  var transDuration = transaction.duration()
+  var traces = []
+  var lastCount = 1
+  transaction.traces
+    .forEach(function (trace, index) {
+      if (traces.length === 0) {
+        traces.push(trace)
+      } else {
+        var lastTrace = traces[traces.length - 1]
+
+        var isContinuouslySimilar = lastTrace.type === trace.type &&
+          lastTrace.signature === trace.signature &&
+          trace.duration() / transDuration < threshold &&
+          (trace._start - lastTrace._end) / transDuration < threshold
+
+        var isLastTrace = transaction.traces.length === index + 1
+
+        if (isContinuouslySimilar) {
+          lastCount++
+          lastTrace._end = trace._end
+          lastTrace.calcDiff()
+        }
+
+        if (lastCount > 1 && (!isContinuouslySimilar || isLastTrace)) {
+          lastTrace.signature = lastCount + 'x ' + lastTrace.signature
+          lastCount = 1
+        }
+
+        if (!isContinuouslySimilar) {
+          traces.push(trace)
+        }
+      }
+    })
+  return traces
+}
+
+OpbeatBackend.prototype.checkBrowserResponsiveness = function (transaction, interval, buffer) {
+  var counter = transaction.browserResponsivenessCounter
+  if (typeof interval === 'undefined' || typeof counter === 'undefined') {
+    return true
+  }
+
+  var duration = transaction._rootTrace.duration()
+  var expectedCount = Math.floor(duration / interval)
+  var wasBrowserResponsive = counter + buffer >= expectedCount
+
+  return wasBrowserResponsive
+}
+
+OpbeatBackend.prototype.sendTransactions = function (transactionList) {
+  var opbeatBackend = this
+  if (this._config.isValid()) {
+    var browserResponsivenessInterval = opbeatBackend._config.get('performance.browserResponsivenessInterval')
+    var checkBrowserResponsiveness = opbeatBackend._config.get('performance.checkBrowserResponsiveness')
+
+    transactionList.forEach(function (transaction) {
+      transaction.traces.sort(function (traceA, traceB) {
+        return traceA._start - traceB._start
+      })
+
+      if (opbeatBackend._config.get('performance.groupSimilarTraces')) {
+        var similarTraceThreshold = opbeatBackend._config.get('performance.similarTraceThreshold')
+        transaction.traces = opbeatBackend.groupSmallContinuouslySimilarTraces(transaction, similarTraceThreshold)
+      }
+      var context = opbeatBackend._config.get('context')
+      if (context) {
+        transaction.contextInfo = utils.merge(transaction.contextInfo || {}, context)
+      }
+
+      var ctx = transaction.contextInfo
+      if (ctx.browser && ctx.browser.location) {
+        ctx.browser.location = ctx.browser.location.substring(0, 511)
+        var protocol = ctx.browser.location.split('://')[0]
+        var acceptedProtocols = ['http', 'https', 'file']
+        if (acceptedProtocols.indexOf(protocol) < 0) {
+          delete ctx.browser.location
+        }
+      }
+      if (checkBrowserResponsiveness) {
+        if (!ctx.debug) {
+          ctx.debug = {}
+        }
+        ctx.debug.browserResponsivenessCounter = transaction.browserResponsivenessCounter
+        ctx.debug.browserResponsivenessInterval = browserResponsivenessInterval
+      }
+    })
+
+    var filterTransactions = transactionList.filter(function (tr) {
+      if (checkBrowserResponsiveness) {
+        var buffer = opbeatBackend._config.get('performance.browserResponsivenessBuffer')
+
+        var duration = tr._rootTrace.duration()
+        var wasBrowserResponsive = opbeatBackend.checkBrowserResponsiveness(tr, browserResponsivenessInterval, buffer)
+        if (!wasBrowserResponsive) {
+          opbeatBackend._logger.debug('Transaction was discarded! browser was not responsive enough during the transaction.', ' duration:', duration, ' browserResponsivenessCounter:', tr.browserResponsivenessCounter, 'interval:', browserResponsivenessInterval)
+          return false
+        }
+      }
+      return true
+    })
+
+    if (filterTransactions.length > 0) {
+      var formatedTransactions = this._formatTransactions(filterTransactions)
+      var headers = this.getHeaders()
+      return this._transport.sendTransaction(formatedTransactions, headers)
+    }
+  } else {
+    this._logger.debug('Config is not valid')
+  }
+}
+
+OpbeatBackend.prototype._formatTransactions = function (transactionList) {
+  var transactions = this.groupTransactions(transactionList)
+
+  var traces = [].concat.apply([], transactionList.map(function (trans) {
+    return trans.traces
+  }))
+
+  var groupedTraces = groupTraces(traces)
+  var groupedTracesTimings = this.getRawGroupedTracesTimings(traces, groupedTraces)
+
+  groupedTraces.forEach(function (g) {
+    delete g._group
+    if (typeof g.signature === 'string') {
+      g.signature = g.signature.substring(0, 511)
+    }
+  })
+
+  return {
+    transactions: transactions,
+    traces: {
+      groups: groupedTraces,
+      raw: groupedTracesTimings
+    }
+  }
+}
+
+OpbeatBackend.prototype.groupTransactions = function groupTransactions (transactions) {
+  var groups = grouper(transactions, transactionGroupingKey)
+  return Object.keys(groups).map(function (key) {
+    var trans = groups[key][0]
+    var durations = groups[key].map(function (trans) {
+      return trans.duration()
+    })
+    return {
+      transaction: trans.name,
+      result: trans.result,
+      kind: trans.type,
+      timestamp: groupingTs(trans._startStamp).toISOString(),
+      durations: durations
+    }
+  })
+}
+
+OpbeatBackend.prototype.getRawGroupedTracesTimings = function getRawGroupedTracesTimings (traces, groupedTraces) {
+  var getTraceGroupIndex = function (col, item) {
+    var index = 0
+    var targetGroup = traceGroupingKey(item)
+
+    col.forEach(function (item, i) {
+      if (item._group === targetGroup) {
+        index = i
+      }
+    })
+
+    return index
+  }
+  var self = this
+  var groupedByTransaction = grouper(traces, function (trace) {
+    return trace.transaction.name + '|' + trace.transaction._start
+  })
+
+  return Object.keys(groupedByTransaction).map(function (key) {
+    var traces = groupedByTransaction[key]
+    var transaction = traces[0].transaction
+
+    var data = [transaction.duration()]
+
+    traces.forEach(function (trace) {
+      var groupIndex = getTraceGroupIndex(groupedTraces, trace)
+      var relativeTraceStart = trace._start - transaction._start
+
+      if (relativeTraceStart > transaction.duration()) {
+        self._logger.debug('%c -- opbeat.instrumentation.getRawGroupedTracesTimings.error.relativeTraceStartLargerThanTransactionDuration', 'color: #ff0000', relativeTraceStart, transaction._start, transaction.duration(), { trace: trace, transaction: transaction })
+      } else if (relativeTraceStart < 0) {
+        self._logger.debug('%c -- opbeat.instrumentation.getRawGroupedTracesTimings.error.negativeRelativeTraceStart!', 'color: #ff0000', relativeTraceStart, trace._start, transaction._start, trace)
+      } else if (trace.duration() > transaction.duration()) {
+        self._logger.debug('%c -- opbeat.instrumentation.getRawGroupedTracesTimings.error.traceDurationLargerThanTranscationDuration', 'color: #ff0000', trace.duration(), transaction.duration(), { trace: trace, transaction: transaction })
+      } else {
+        data.push([groupIndex, relativeTraceStart, trace.duration()])
+      }
+    })
+
+    if (transaction.contextInfo && Object.keys(transaction.contextInfo).length > 0) {
+      data.push(transaction.contextInfo)
+    }
+    return data
+  })
+}
+
+function groupTraces (traces) {
+  var groupedByMinute = grouper(traces, traceGroupingKey)
+
+  return Object.keys(groupedByMinute).map(function (key) {
+    var trace = groupedByMinute[key][0]
+
+    var startTime = trace._start
+    if (trace.transaction) {
+      startTime = startTime - trace.transaction._start
+    } else {
+      startTime = 0
+    }
+
+    var extra = {}
+    var frames = backendUtils.createValidFrames(trace.frames)
+    if (frames.length > 0) {
+      extra._frames = frames
+    }
+
+    return {
+      transaction: trace.transaction.name,
+      signature: trace.signature,
+      kind: trace.type,
+      timestamp: trace.transaction._startStamp.toISOString(),
+      parents: trace.ancestors(),
+      extra: extra,
+      _group: key
+    }
+  }).sort(function (a, b) {
+    return a.start_time - b.start_time
+  })
+}
+
+function grouper (arr, func) {
+  var groups = {}
+
+  arr.forEach(function (obj) {
+    var key = func(obj)
+    if (key in groups) {
+      groups[key].push(obj)
+    } else {
+      groups[key] = [obj]
+    }
+
+    obj._traceGroup = key
+  })
+
+  return groups
+}
+
+function groupingTs (ts) {
+  return new Date(ts.getFullYear(), ts.getMonth(), ts.getDate(), ts.getHours(), ts.getMinutes())
+}
+
+function transactionGroupingKey (trans) {
+  return [
+    groupingTs(trans._startStamp).getTime(),
+    trans.name,
+    trans.result,
+    trans.type
+  ].join('-')
+}
+
+function traceGroupingKey (trace) {
+  var ancestors = trace.ancestors().map(function (trace) {
+    return trace.signature
+  }).join(',')
+
+  return [
+    groupingTs(trace.transaction._startStamp).getTime(),
+    trace.transaction.name,
+    ancestors,
+    trace.signature,
+    trace.type
+  ].join('-')
+}
+
+},{"../lib/utils":19,"./backend_utils":3}],5:[function(_dereq_,module,exports){
+var patchXMLHttpRequest = _dereq_('./patches/xhrPatch')
+
+function patchCommon (serviceContainer) {
+  patchXMLHttpRequest(serviceContainer)
+}
+
+module.exports = patchCommon
+
+},{"./patches/xhrPatch":7}],6:[function(_dereq_,module,exports){
+module.exports = {
+  patchFunction: function patchModule (delegate, options) {},
+  _copyProperties: function _copyProperties (source, target) {
+    for (var key in source) {
+      if (source.hasOwnProperty(key)) {
+        target[key] = source[key]
+      }
+    }
+  },
+  wrapAfter: function wrapAfter (fn, wrapWith) {
+    return function () {
+      var res = fn.apply(this, arguments)
+      wrapWith.apply(this, arguments)
+      return res
+    }
+  },
+  wrapBefore: function wrapBefore (fn, wrapWith) {
+    return function () {
+      wrapWith.apply(this, arguments)
+      return fn.apply(this, arguments)
+    }
+  },
+  wrap: function (fn, before, after) {
+    return function () {
+      before.apply(this, arguments)
+      var res = fn.apply(this, arguments)
+      after.apply(this, arguments)
+      return res
+    }
+  },
+  argumentsToArray: function argumentsToArray (args) {
+    var newArgs = []
+    for (var i = 0; i < args.length; i++) {
+      newArgs[i] = args[i]
+    }
+    return newArgs
+  },
+  opbeatSymbol: opbeatSymbol,
+  patchMethod: patchMethod
+}
+
+function opbeatSymbol (name) {
+  return '__opbeat_symbol__' + name
+}
+
+function patchMethod (target, name, patchFn) {
+  var proto = target
+  while (proto && !proto.hasOwnProperty(name)) {
+    proto = Object.getPrototypeOf(proto)
+  }
+  if (!proto && target[name]) {
+    // somehow we did not find it, but we can see it. This happens on IE for Window properties.
+    proto = target
+  }
+  var delegateName = opbeatSymbol(name)
+  var delegate
+  if (proto && !(delegate = proto[delegateName])) {
+    delegate = proto[delegateName] = proto[name]
+    proto[name] = createNamedFn(name, patchFn(delegate, delegateName, name))
+  }
+  return delegate
+}
+
+function createNamedFn (name, delegate) {
+  try {
+    return (Function('f', 'return function ' + name + '(){return f(this, arguments)}'))(delegate) // eslint-disable-line
+  } catch (e) {
+    // if we fail, we must be CSP, just return delegate.
+    return function () {
+      return delegate(this, arguments)
+    }
+  }
+}
+
+},{}],7:[function(_dereq_,module,exports){
+var patchUtils = _dereq_('../patchUtils')
+
+var urlSympbol = patchUtils.opbeatSymbol('url')
+var methodSymbol = patchUtils.opbeatSymbol('method')
+var isAsyncSymbol = patchUtils.opbeatSymbol('isAsync')
+
+module.exports = function patchXMLHttpRequest () {
+  patchUtils.patchMethod(window.XMLHttpRequest.prototype, 'open', function (delegate) {
+    return function (self, args) {
+      self[methodSymbol] = args[0]
+      self[urlSympbol] = args[1]
+      self[isAsyncSymbol] = args[2]
+      delegate.apply(self, args)
+    }
+  })
+}
+
+},{"../patchUtils":6}],8:[function(_dereq_,module,exports){
+var OpbeatBackend = _dereq_('../backend/opbeat_backend')
+var Logger = _dereq_('loglevel')
+var Config = _dereq_('../lib/config')
+
+var utils = _dereq_('../lib/utils')
+var transport = _dereq_('../lib/transport')
+var ExceptionHandler = _dereq_('../exceptions/exceptionHandler')
+var PerformanceServiceContainer = _dereq_('../performance/serviceContainer')
+
+function ServiceFactory () {
+  this.services = {}
+}
+
+ServiceFactory.prototype.getOpbeatBackend = function () {
+  if (utils.isUndefined(this.services['OpbeatBackend'])) {
+    var logger = this.getLogger()
+    var configService = this.getConfigService()
+    var _transport = this.getTransport()
+    this.services['OpbeatBackend'] = new OpbeatBackend(_transport, logger, configService)
+  }
+  return this.services['OpbeatBackend']
+}
+
+ServiceFactory.prototype.getTransport = function () {
+  if (utils.isUndefined(this.services['Transport'])) {
+    this.services['Transport'] = transport
+  }
+  return this.services['Transport']
+}
+
+ServiceFactory.prototype.setLogLevel = function (logger, configService) {
+  if (configService.get('debug') === true && configService.config.logLevel !== 'trace') {
+    logger.setLevel('debug', false)
+  } else {
+    logger.setLevel(configService.get('logLevel'), false)
+  }
+}
+
+ServiceFactory.prototype.getLogger = function () {
+  if (utils.isUndefined(this.services['Logger'])) {
+    var configService = this.getConfigService()
+    var serviceFactory = this
+    serviceFactory.setLogLevel(Logger, configService)
+    configService.subscribeToChange(function (newConfig) {
+      serviceFactory.setLogLevel(Logger, configService)
+    })
+    this.services['Logger'] = Logger
+  }
+  return this.services['Logger']
+}
+
+ServiceFactory.prototype.getConfigService = function () {
+  if (utils.isUndefined(this.services['ConfigService'])) {
+    Config.init()
+    this.services['ConfigService'] = Config
+  }
+  return this.services['ConfigService']
+}
+
+ServiceFactory.prototype.getExceptionHandler = function () {
+  if (utils.isUndefined(this.services['ExceptionHandler'])) {
+    var logger = this.getLogger()
+    var configService = this.getConfigService()
+    var exceptionHandler = new ExceptionHandler(this.getOpbeatBackend(), configService, logger)
+    this.services['ExceptionHandler'] = exceptionHandler
+  }
+  return this.services['ExceptionHandler']
+}
+
+ServiceFactory.prototype.getPerformanceServiceContainer = function () {
+  if (utils.isUndefined(this.services['PerformanceServiceContainer'])) {
+    this.services['PerformanceServiceContainer'] = new PerformanceServiceContainer(this)
+  }
+  return this.services['PerformanceServiceContainer']
+}
+
+module.exports = ServiceFactory
+
+},{"../backend/opbeat_backend":4,"../exceptions/exceptionHandler":11,"../lib/config":15,"../lib/transport":18,"../lib/utils":19,"../performance/serviceContainer":20,"loglevel":2}],9:[function(_dereq_,module,exports){
+function Subscription () {
+  this.subscriptions = []
+}
+
+Subscription.prototype.subscribe = function (fn) {
+  var self = this
+  this.subscriptions.push(fn)
+
+  return function () {
+    var index = self.subscriptions.indexOf(fn)
+    if (index > -1) {
+      self.subscriptions.splice(index, 1)
+    }
+  }
+}
+
+Subscription.prototype.applyAll = function (applyTo, applyWith) {
+  this.subscriptions.forEach(function (fn) {
+    try {
+      fn.apply(applyTo, applyWith)
+    } catch (error) {
+      console.log(error, error.stack)
+    }
+  }, this)
+}
+
+module.exports = Subscription
+
+},{}],10:[function(_dereq_,module,exports){
+var utils = _dereq_('../lib/utils')
+var fileFetcher = _dereq_('../lib/fileFetcher')
+
+module.exports = {
+
+  _findSourceMappingURL: function (source) {
+    var m = /\/\/[#@] ?sourceMappingURL=([^\s'"]+)[\s]*$/.exec(source)
+    if (m && m[1]) {
+      return m[1]
+    }
+    return null
+  },
+
+  getFileSourceMapUrl: function (fileUrl) {
+    var self = this
+    var fileBasePath
+
+    if (!fileUrl) {
+      return Promise.reject('no fileUrl')
+    }
+
+    if (fileUrl.split('/').length > 1) {
+      fileBasePath = fileUrl.split('/').slice(0, -1).join('/') + '/'
+    } else {
+      fileBasePath = '/'
+    }
+
+    return new Promise(function (resolve, reject) {
+      fileFetcher.getFile(fileUrl).then(function (source) {
+        var sourceMapUrl = self._findSourceMappingURL(source)
+        if (sourceMapUrl) {
+          sourceMapUrl = fileBasePath + sourceMapUrl
+          resolve(sourceMapUrl)
+        } else {
+          reject('no sourceMapUrl')
+        }
+      }, reject)
+    })
+  },
+
+  getExceptionContexts: function (url, line) {
+    if (!url || !line) {
+      return Promise.reject('no line or url')
+    }
+
+    return new Promise(function (resolve, reject) {
+      fileFetcher.getFile(url).then(function (source) {
+        line -= 1 // convert line to 0-based index
+
+        var sourceLines = source.split('\n')
+        var linesBefore = 5
+        var linesAfter = 5
+
+        var contexts = {
+          preContext: [],
+          contextLine: null,
+          postContext: []
+        }
+
+        if (sourceLines.length) {
+          var isMinified
+
+          // Treat HTML files as non-minified
+          if (source.indexOf('<html') > -1) {
+            isMinified = false
+          } else {
+            isMinified = this.isSourceMinified(source)
+          }
+
+          // Don't generate contexts if source is minified
+          if (isMinified) {
+            return reject()
+          }
+
+          // Pre context
+          var preStartIndex = Math.max(0, line - linesBefore - 1)
+          var preEndIndex = Math.min(sourceLines.length, line - 1)
+          for (var i = preStartIndex; i <= preEndIndex; ++i) {
+            if (!utils.isUndefined(sourceLines[i])) {
+              contexts.preContext.push(sourceLines[i])
+            }
+          }
+
+          // Line context
+          contexts.contextLine = sourceLines[line]
+
+          // Post context
+          var postStartIndex = Math.min(sourceLines.length, line + 1)
+          var postEndIndex = Math.min(sourceLines.length, line + linesAfter)
+          for (var j = postStartIndex; j <= postEndIndex; ++j) {
+            if (!utils.isUndefined(sourceLines[j])) {
+              contexts.postContext.push(sourceLines[j])
+            }
+          }
+        }
+
+        var charLimit = 1000
+        // Circuit breaker for huge file contexts
+        if (contexts.contextLine.length > charLimit) {
+          reject('aborting generating contexts, as line is over 1000 chars')
+        }
+
+        contexts.preContext.forEach(function (line) {
+          if (line.length > charLimit) {
+            reject('aborting generating contexts, as preContext line is over 1000 chars')
+          }
+        })
+
+        contexts.postContext.forEach(function (line) {
+          if (line.length > charLimit) {
+            reject('aborting generating contexts, as postContext line is over 1000 chars')
+          }
+        })
+
+        resolve(contexts)
+      }.bind(this), reject)
+    }.bind(this))
+  },
+
+  isSourceMinified: function (source) {
+    // Source: https://dxr.mozilla.org/mozilla-central/source/devtools/client/debugger/utils.js#62
+    var SAMPLE_SIZE = 50 // no of lines
+    var INDENT_COUNT_THRESHOLD = 5 // percentage
+    var CHARACTER_LIMIT = 250 // line character limit
+
+    var isMinified
+    var lineEndIndex = 0
+    var lineStartIndex = 0
+    var lines = 0
+    var indentCount = 0
+    var overCharLimit = false
+
+    if (!source) {
+      return false
+    }
+
+    // Strip comments.
+    source = source.replace(/\/\*[\S\s]*?\*\/|\/\/(.+|\n)/g, '')
+
+    while (lines++ < SAMPLE_SIZE) {
+      lineEndIndex = source.indexOf('\n', lineStartIndex)
+      if (lineEndIndex === -1) {
+        break
+      }
+      if (/^\s+/.test(source.slice(lineStartIndex, lineEndIndex))) {
+        indentCount++
+      }
+      // For files with no indents but are not minified.
+      if ((lineEndIndex - lineStartIndex) > CHARACTER_LIMIT) {
+        overCharLimit = true
+        break
+      }
+      lineStartIndex = lineEndIndex + 1
+    }
+
+    isMinified = ((indentCount / lines) * 100) < INDENT_COUNT_THRESHOLD || overCharLimit
+
+    return isMinified
+  }
+
+}
+
+},{"../lib/fileFetcher":16,"../lib/utils":19}],11:[function(_dereq_,module,exports){
+var stackTrace = _dereq_('./stacktrace')
+var frames = _dereq_('./frames')
+
+var ExceptionHandler = function (opbeatBackend, config, logger) {
+  this._opbeatBackend = opbeatBackend
+  this._config = config
+  this._logger = logger
+}
+
+ExceptionHandler.prototype.install = function () {
+  window.onerror = function (msg, file, line, col, error) {
+    this._processError(error, msg, file, line, col)
+  }.bind(this)
+}
+
+ExceptionHandler.prototype.uninstall = function () {
+  window.onerror = null
+}
+
+ExceptionHandler.prototype.processError = function (err) {
+  return this._processError(err)
+}
+
+ExceptionHandler.prototype._processError = function processError (error, msg, file, line, col) {
+  if (msg === 'Script error.' && !file) {
+    // ignoring script errors: See https://github.com/getsentry/raven-js/issues/41
+    return
+  }
+
+  var exception = {
+    'message': error ? error.message : msg,
+    'type': error ? error.name : null,
+    'fileurl': file || null,
+    'lineno': line || null,
+    'colno': col || null
+  }
+
+  if (!exception.type) {
+    // Try to extract type from message formatted like 'ReferenceError: Can't find variable: initHighlighting'
+    if (exception.message.indexOf(':') > -1) {
+      exception.type = exception.message.split(':')[0]
+    }
+  }
+
+  var resolveStackFrames
+
+  if (error) {
+    resolveStackFrames = stackTrace.fromError(error)
+  } else {
+    resolveStackFrames = new Promise(function (resolve, reject) {
+      resolve([{
+        'fileName': file,
+        'lineNumber': line,
+        'columnNumber': col
+      }])
+    })
+  }
+
+  var exceptionHandler = this
+  return resolveStackFrames.then(function (stackFrames) {
+    exception.stack = stackFrames || []
+    return frames.stackInfoToOpbeatException(exception).then(function (exception) {
+      var data = frames.processOpbeatException(exception, exceptionHandler._config.get('context.user'), exceptionHandler._config.get('context.extra'))
+      exceptionHandler._opbeatBackend.sendError(data)
+    })
+  })['catch'](function (error) {
+    exceptionHandler._logger.debug(error)
+  })
+}
+
+module.exports = ExceptionHandler
+
+},{"./frames":12,"./stacktrace":13}],12:[function(_dereq_,module,exports){
+var logger = _dereq_('../lib/logger')
+var config = _dereq_('../lib/config')
+var utils = _dereq_('../lib/utils')
+var context = _dereq_('./context')
+var stackTrace = _dereq_('./stacktrace')
+
+var promiseSequence = function (tasks) {
+  var current = Promise.resolve()
+  var results = []
+
+  for (var k = 0; k < tasks.length; ++k) {
+    results.push(current = current.then(tasks[k]))
+  }
+
+  return Promise.all(results)
+}
+
+module.exports = {
+  getFramesForCurrent: function () {
+    return stackTrace.get().then(function (frames) {
+      var tasks = frames.map(function (frame) {
+        return this.buildOpbeatFrame.bind(this, frame)
+      }.bind(this))
+
+      var allFrames = promiseSequence(tasks)
+
+      return allFrames.then(function (opbeatFrames) {
+        return opbeatFrames
+      })
+    }.bind(this))
+  },
+
+  buildOpbeatFrame: function buildOpbeatFrame (stack) {
+    return new Promise(function (resolve, reject) {
+      if (!stack.fileName && !stack.lineNumber) {
+        // Probably an stack from IE, return empty frame as we can't use it.
+        return resolve({})
+      }
+
+      if (!stack.columnNumber && !stack.lineNumber) {
+        // We can't use frames with no columnNumber & lineNumber, so ignore for now
+        return resolve({})
+      }
+
+      var filePath = this.cleanFilePath(stack.fileName)
+      var fileName = this.filePathToFileName(filePath)
+
+      if (this.isFileInline(filePath)) {
+        fileName = '(inline script)'
+      }
+
+      // Build Opbeat frame data
+      var frame = {
+        'filename': fileName,
+        'lineno': stack.lineNumber,
+        'colno': stack.columnNumber,
+        'function': stack.functionName || '<anonymous>',
+        'abs_path': stack.fileName,
+        'in_app': this.isFileInApp(filePath)
+      }
+
+      // Detect Sourcemaps
+      var sourceMapResolver = context.getFileSourceMapUrl(filePath)
+
+      sourceMapResolver.then(function (sourceMapUrl) {
+        frame.sourcemap_url = sourceMapUrl
+        resolve(frame)
+      }, function () {
+        // // Resolve contexts if no source map
+        var filePath = this.cleanFilePath(stack.fileName)
+        var contextsResolver = context.getExceptionContexts(filePath, stack.lineNumber)
+
+        contextsResolver.then(function (contexts) {
+          frame.pre_context = contexts.preContext
+          frame.context_line = contexts.contextLine
+          frame.post_context = contexts.postContext
+          resolve(frame)
+        })['catch'](function () {
+          resolve(frame)
+        })
+      }.bind(this))
+    }.bind(this))
+  },
+
+  stackInfoToOpbeatException: function (stackInfo) {
+    return new Promise(function (resolve, reject) {
+      if (stackInfo.stack && stackInfo.stack.length) {
+        var tasks = stackInfo.stack.map(function (frame) {
+          return this.buildOpbeatFrame.bind(this, frame)
+        }.bind(this))
+
+        var allFrames = promiseSequence(tasks)
+
+        allFrames.then(function (frames) {
+          stackInfo.frames = frames
+          stackInfo.stack = null
+          resolve(stackInfo)
+        })
+      } else {
+        resolve(stackInfo)
+      }
+    }.bind(this))
+  },
+
+  processOpbeatException: function (exception, userContext, extraContext) {
+    var type = exception.type
+    var message = String(exception.message) || 'Script error'
+    var filePath = this.cleanFilePath(exception.fileurl)
+    var fileName = this.filePathToFileName(filePath)
+    var frames = exception.frames || []
+    var culprit
+
+    if (frames && frames.length) {
+      // Opbeat.com expects frames oldest to newest and JS sends them as newest to oldest
+      frames.reverse()
+    } else if (fileName) {
+      frames.push({
+        filename: fileName,
+        lineno: exception.lineno
+      })
+    }
+
+    var stacktrace = {
+      frames: frames
+    }
+
+    // Set fileName from last frame, if filename is missing
+    if (!fileName && frames.length) {
+      var lastFrame = frames[frames.length - 1]
+      if (lastFrame.filename) {
+        fileName = lastFrame.filename
+      } else {
+        // If filename empty, assume inline script
+        fileName = '(inline script)'
+      }
+    }
+
+    if (this.isFileInline(filePath)) {
+      culprit = '(inline script)'
+    } else {
+      culprit = fileName
+    }
+
+    var data = {
+      message: type + ': ' + message,
+      culprit: culprit,
+      exception: {
+        type: type,
+        value: message
+      },
+      http: {
+        url: window.location.href
+      },
+      stacktrace: stacktrace,
+      user: userContext || {},
+      level: null,
+      logger: null,
+      machine: null
+    }
+
+    data.extra = this.getBrowserSpecificMetadata()
+
+    if (extraContext) {
+      data.extra = utils.mergeObject(data.extra, extraContext)
+    }
+
+    logger.log('opbeat.exceptions.processOpbeatException', data)
+    return data
+  },
+
+  cleanFilePath: function (filePath) {
+    if (!filePath) {
+      filePath = ''
+    }
+
+    if (filePath === '<anonymous>') {
+      filePath = ''
+    }
+
+    return filePath
+  },
+
+  filePathToFileName: function (fileUrl) {
+    var origin = window.location.origin || window.location.protocol + '//' + window.location.hostname + (window.location.port ? (':' + window.location.port) : '')
+
+    if (fileUrl.indexOf(origin) > -1) {
+      fileUrl = fileUrl.replace(origin + '/', '')
+    }
+
+    return fileUrl
+  },
+
+  isFileInline: function (fileUrl) {
+    if (fileUrl) {
+      return window.location.href.indexOf(fileUrl) === 0
+    } else {
+      return false
+    }
+  },
+
+  isFileInApp: function (filename) {
+    var pattern = config.get('libraryPathPattern')
+    return !RegExp(pattern).test(filename)
+  },
+
+  getBrowserSpecificMetadata: function () {
+    var viewportInfo = utils.getViewPortInfo()
+    var extra = {
+      'environment': {
+        'utcOffset': new Date().getTimezoneOffset() / -60.0,
+        'browserWidth': viewportInfo.width,
+        'browserHeight': viewportInfo.height,
+        'screenWidth': window.screen.width,
+        'screenHeight': window.screen.height,
+        'language': navigator.language,
+        'userAgent': navigator.userAgent,
+        'platform': navigator.platform
+      },
+      'page': {
+        'referer': document.referrer,
+        'host': document.domain,
+        'location': window.location.href
+      }
+    }
+
+    return extra
+  }
+
+}
+
+},{"../lib/config":15,"../lib/logger":17,"../lib/utils":19,"./context":10,"./stacktrace":13}],13:[function(_dereq_,module,exports){
+var ErrorStackParser = _dereq_('error-stack-parser')
+var StackGenerator = _dereq_('stack-generator')
+var utils = _dereq_('../lib/utils')
+
+var defaultOptions = {
+  filter: function (stackframe) {
+    // Filter out stackframes for this library by default
+    return (stackframe.functionName || '').indexOf('StackTrace$$') === -1 &&
+    (stackframe.functionName || '').indexOf('ErrorStackParser$$') === -1 &&
+    (stackframe.functionName || '').indexOf('StackGenerator$$') === -1 &&
+    (stackframe.functionName || '').indexOf('opbeatFunctionWrapper') === -1 &&
+    (stackframe.fileName || '').indexOf('opbeat-angular.js') === -1 &&
+    (stackframe.fileName || '').indexOf('opbeat-angular.min.js') === -1 &&
+    (stackframe.fileName || '').indexOf('opbeat.js') === -1 &&
+    (stackframe.fileName || '').indexOf('opbeat.min.js') === -1
+  }
+}
+
+module.exports = {
+  get: function StackTrace$$generate (opts) {
+    try {
+      // Error must be thrown to get stack in IE
+      throw new Error()
+    } catch (err) {
+      if (_isShapedLikeParsableError(err)) {
+        return this.fromError(err, opts)
+      } else {
+        return this.generateArtificially(opts)
+      }
+    }
+  },
+
+  generateArtificially: function StackTrace$$generateArtificially (opts) {
+    opts = utils.mergeObject(defaultOptions, opts)
+
+    var stackFrames = StackGenerator.backtrace(opts)
+    if (typeof opts.filter === 'function') {
+      stackFrames = stackFrames.filter(opts.filter)
+    }
+
+    stackFrames = ErrorStackNormalizer(stackFrames)
+
+    return Promise.resolve(stackFrames)
+  },
+
+  fromError: function StackTrace$$fromError (error, opts) {
+    opts = utils.mergeObject(defaultOptions, opts)
+
+    return new Promise(function (resolve) {
+      var stackFrames = ErrorStackParser.parse(error)
+      if (typeof opts.filter === 'function') {
+        stackFrames = stackFrames.filter(opts.filter)
+      }
+
+      stackFrames = ErrorStackNormalizer(stackFrames)
+
+      resolve(Promise.all(stackFrames.map(function (sf) {
+        return new Promise(function (resolve) {
+          resolve(sf)
+        })
+      })))
+    })
+  }
+}
+
+function _isShapedLikeParsableError (err) {
+  return err.stack || err['opera#sourceloc']
+}
+
+function ErrorStackNormalizer (stackFrames) {
+  return stackFrames.map(function (frame) {
+    if (frame.functionName) {
+      frame.functionName = normalizeFunctionName(frame.functionName)
+    }
+    return frame
+  })
+}
+
+function normalizeFunctionName (fnName) {
+  // SpinderMonkey name convetion (https://developer.mozilla.org/en-US/docs/Tools/Debugger-API/Debugger.Object#Accessor_Properties_of_the_Debugger.Object_prototype)
+
+  // We use a/b to refer to the b defined within a
+  var parts = fnName.split('/')
+  if (parts.length > 1) {
+    fnName = ['Object', parts[parts.length - 1]].join('.')
+  } else {
+    fnName = parts[0]
+  }
+
+  // a< to refer to a function that occurs somewhere within an expression that is assigned to a.
+  fnName = fnName.replace(/.<$/gi, '.<anonymous>')
+
+  // Normalize IE's 'Anonymous function'
+  fnName = fnName.replace(/^Anonymous function$/, '<anonymous>')
+
+  // Always use the last part
+  parts = fnName.split('.')
+  if (parts.length > 1) {
+    fnName = parts[parts.length - 1]
+  } else {
+    fnName = parts[0]
+  }
+
+  return fnName
+}
+
+},{"../lib/utils":19,"error-stack-parser":1,"stack-generator":29}],14:[function(_dereq_,module,exports){
+// export public core APIs.
+
+module.exports['ServiceFactory'] = _dereq_('./common/serviceFactory')
+module.exports['ServiceContainer'] = _dereq_('./performance/serviceContainer')
+module.exports['ConfigService'] = _dereq_('./lib/config')
+module.exports['TransactionService'] = _dereq_('./performance/transactionService')
+module.exports['Subscription'] = _dereq_('./common/subscription')
+
+module.exports['patchUtils'] = _dereq_('./common/patchUtils')
+module.exports['patchCommon'] = _dereq_('./common/patchCommon')
+module.exports['utils'] = _dereq_('./lib/utils')
+
+var test = module.exports['test'] = {}
+test.ZoneServiceMock = _dereq_('../test/performance/zoneServiceMock')
+
+},{"../test/performance/zoneServiceMock":26,"./common/patchCommon":5,"./common/patchUtils":6,"./common/serviceFactory":8,"./common/subscription":9,"./lib/config":15,"./lib/utils":19,"./performance/serviceContainer":20,"./performance/transactionService":24}],15:[function(_dereq_,module,exports){
+var utils = _dereq_('./utils')
+var Subscription = _dereq_('../common/subscription')
+
+function Config () {
+  this.config = {}
+  this.defaults = {
+    opbeatAgentName: 'opbeat-js',
+    VERSION: 'v3.5.0',
+    apiHost: 'intake.opbeat.com',
+    isInstalled: false,
+    debug: false,
+    logLevel: 'warn',
+    orgId: null,
+    appId: null,
+    angularAppName: null,
+    performance: {
+      browserResponsivenessInterval: 500,
+      browserResponsivenessBuffer: 3,
+      checkBrowserResponsiveness: true,
+      enable: true,
+      enableStackFrames: false,
+      groupSimilarTraces: true,
+      similarTraceThreshold: 0.05,
+      captureInteractions: false,
+      sendVerboseDebugInfo: false
+    },
+    libraryPathPattern: '(node_modules|bower_components|webpack)',
+    context: {},
+    platform: {}
+  }
+
+  this._changeSubscription = new Subscription()
+}
+
+Config.prototype.init = function () {
+  var scriptData = _getConfigFromScript()
+  this.setConfig(scriptData)
+}
+
+Config.prototype.get = function (key) {
+  return utils.arrayReduce(key.split('.'), function (obj, i) {
+    return obj && obj[i]
+  }, this.config)
+}
+
+Config.prototype.set = function (key, value) {
+  var levels = key.split('.')
+  var max_level = levels.length - 1
+  var target = this.config
+
+  utils.arraySome(levels, function (level, i) {
+    if (typeof level === 'undefined') {
+      return true
+    }
+    if (i === max_level) {
+      target[level] = value
+    } else {
+      var obj = target[level] || {}
+      target[level] = obj
+      target = obj
+    }
+  })
+}
+
+Config.prototype.getAgentName = function () {
+  var version = this.config['VERSION']
+  if (!version || version.indexOf('%%VERSION') >= 0) {
+    version = 'dev'
+  }
+  return this.get('opbeatAgentName') + '/' + version
+}
+
+Config.prototype.setConfig = function (properties) {
+  properties = properties || {}
+  this.config = utils.merge({}, this.defaults, this.config, properties)
+
+  this._changeSubscription.applyAll(this, [this.config])
+}
+
+Config.prototype.subscribeToChange = function (fn) {
+  return this._changeSubscription.subscribe(fn)
+}
+
+Config.prototype.isValid = function () {
+  var requiredKeys = ['appId', 'orgId']
+  var values = utils.arrayMap(requiredKeys, utils.functionBind(function (key) {
+    return (this.config[key] === null) || (this.config[key] === undefined)
+  }, this))
+
+  return utils.arrayIndexOf(values, true) === -1
+}
+
+var _getConfigFromScript = function () {
+  var script = utils.getCurrentScript()
+  var config = _getDataAttributesFromNode(script)
+  return config
+}
+
+function _getDataAttributesFromNode (node) {
+  var dataAttrs = {}
+  var dataRegex = /^data\-([\w\-]+)$/
+
+  if (node) {
+    var attrs = node.attributes
+    for (var i = 0; i < attrs.length; i++) {
+      var attr = attrs[i]
+      if (dataRegex.test(attr.nodeName)) {
+        var key = attr.nodeName.match(dataRegex)[1]
+
+        // camelCase key
+        key = utils.arrayMap(key.split('-'), function (group, index) {
+          return index > 0 ? group.charAt(0).toUpperCase() + group.substring(1) : group
+        }).join('')
+
+        dataAttrs[key] = attr.value || attr.nodeValue
+      }
+    }
+  }
+
+  return dataAttrs
+}
+
+Config.prototype.VERSION = 'v3.5.0'
+
+Config.prototype.isPlatformSupported = function () {
+  return typeof Array.prototype.forEach === 'function' &&
+    typeof JSON.stringify === 'function' &&
+    typeof Function.bind === 'function' &&
+    window.performance &&
+    typeof window.performance.now === 'function' &&
+    utils.isCORSSupported()
+}
+
+module.exports = new Config()
+
+},{"../common/subscription":9,"./utils":19}],16:[function(_dereq_,module,exports){
+var SimpleCache = _dereq_('simple-lru-cache')
+var transport = _dereq_('./transport')
+
+var cache = new SimpleCache({
+  'maxSize': 1000
+})
+
+module.exports = {
+  getFile: function (url) {
+    var cachedPromise = cache.get(url)
+    if (typeof cachedPromise !== 'undefined') {
+      return cachedPromise
+    }
+    var filePromise = transport.getFile(url)
+    cache.set(url, filePromise)
+    return filePromise
+  }
+}
+
+},{"./transport":18,"simple-lru-cache":27}],17:[function(_dereq_,module,exports){
+var config = _dereq_('./config')
+
+var logStack = []
+
+module.exports = {
+  getLogStack: function () {
+    return logStack
+  },
+
+  error: function (msg, data) {
+    return this.log('%c ' + msg, 'color: red', data)
+  },
+
+  warning: function (msg, data) {
+    return this.log('%c ' + msg, 'background-color: ffff00', data)
+  },
+
+  log: function (message, data) {
+    // Optimized copy of arguments (V8 https://github.com/GoogleChrome/devtools-docs/issues/53#issuecomment-51941358)
+    var args = new Array(arguments.length)
+    for (var i = 0, l = arguments.length; i < l; i++) {
+      args[i] = arguments[i]
+    }
+
+    var isDebugMode = config.get('debug') === true || config.get('debug') === 'true'
+    var hasConsole = window.console
+
+    logStack.push({
+      msg: message,
+      data: args.slice(1)
+    })
+
+    if (isDebugMode && hasConsole) {
+      if (typeof Function.prototype.bind === 'function') {
+        return window.console.log.apply(window.console, args)
+      } else {
+        return Function.prototype.apply.call(window.console.log, window.console, args)
+      }
+    }
+  }
+}
+
+},{"./config":15}],18:[function(_dereq_,module,exports){
+var logger = _dereq_('./logger')
+var config = _dereq_('./config')
+
+module.exports = {
+  sendError: function (data, headers) {
+    return _sendToOpbeat('errors', data, headers)
+  },
+
+  sendTransaction: function (data, headers) {
+    return _sendToOpbeat('transactions', data, headers)
+  },
+
+  getFile: function (fileUrl) {
+    return _makeRequest(fileUrl, 'GET', '', {})
+  }
+}
+
+function _sendToOpbeat (endpoint, data, headers) {
+  logger.log('opbeat.transport.sendToOpbeat', data)
+
+  var url = 'https://' + config.get('apiHost') + '/api/v1/organizations/' + config.get('orgId') + '/apps/' + config.get('appId') + '/client-side/' + endpoint + '/'
+
+  return _makeRequest(url, 'POST', 'JSON', data, headers)
+}
+
+function _makeRequest (url, method, type, data, headers) {
+  return new Promise(function (resolve, reject) {
+    var xhr = new window.XMLHttpRequest()
+
+    xhr.open(method, url, true)
+    xhr.timeout = 10000
+
+    if (type === 'JSON') {
+      xhr.setRequestHeader('Content-Type', 'application/json')
+    }
+
+    if (headers) {
+      for (var header in headers) {
+        if (headers.hasOwnProperty(header)) {
+          xhr.setRequestHeader(header.toLowerCase(), headers[header])
+        }
+      }
+    }
+
+    xhr.onreadystatechange = function (evt) {
+      if (xhr.readyState === 4) {
+        var status = xhr.status
+        if (status === 0 || status > 399 && status < 600) {
+          // An http 4xx or 5xx error. Signal an error.
+          var err = new Error(url + ' HTTP status: ' + status)
+          err.xhr = xhr
+          reject(err)
+          logger.log('opbeat.transport.makeRequest.error', err)
+        } else {
+          resolve(xhr.responseText)
+          logger.log('opbeat.transport.makeRequest.success')
+        }
+      }
+    }
+
+    xhr.onerror = function (err) {
+      reject(err)
+      logger.log('opbeat.transport.makeRequest.error', err)
+    }
+
+    if (type === 'JSON') {
+      data = JSON.stringify(data)
+    }
+
+    xhr.send(data)
+  })
+}
+
+},{"./config":15,"./logger":17}],19:[function(_dereq_,module,exports){
+var slice = [].slice
+
+module.exports = {
+  getViewPortInfo: function getViewPort () {
+    var e = document.documentElement
+    var g = document.getElementsByTagName('body')[0]
+    var x = window.innerWidth || e.clientWidth || g.clientWidth
+    var y = window.innerHeight || e.clientHeight || g.clientHeight
+
+    return {
+      width: x,
+      height: y
+    }
+  },
+
+  mergeObject: function (o1, o2) {
+    var a
+    var o3 = {}
+
+    for (a in o1) {
+      o3[a] = o1[a]
+    }
+
+    for (a in o2) {
+      o3[a] = o2[a]
+    }
+
+    return o3
+  },
+
+  extend: function extend (dst) {
+    return this.baseExtend(dst, slice.call(arguments, 1), false)
+  },
+
+  merge: function merge (dst) {
+    return this.baseExtend(dst, slice.call(arguments, 1), true)
+  },
+
+  baseExtend: function baseExtend (dst, objs, deep) {
+    for (var i = 0, ii = objs.length; i < ii; ++i) {
+      var obj = objs[i]
+      if (!isObject(obj) && !isFunction(obj)) continue
+      var keys = Object.keys(obj)
+      for (var j = 0, jj = keys.length; j < jj; j++) {
+        var key = keys[j]
+        var src = obj[key]
+
+        if (deep && isObject(src)) {
+          if (!isObject(dst[key])) dst[key] = Array.isArray(src) ? [] : {}
+          baseExtend(dst[key], [src], false) // only one level of deep merge
+        } else {
+          dst[key] = src
+        }
+      }
+    }
+
+    return dst
+  },
+
+  isObject: isObject,
+
+  isFunction: isFunction,
+
+  arrayReduce: function (arrayValue, callback, value) {
+    // Source: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/reduce
+    if (arrayValue == null) {
+      throw new TypeError('Array.prototype.reduce called on null or undefined')
+    }
+    if (typeof callback !== 'function') {
+      throw new TypeError(callback + ' is not a function')
+    }
+    var t = Object(arrayValue)
+    var len = t.length >>> 0
+    var k = 0
+
+    if (!value) {
+      while (k < len && !(k in t)) {
+        k++
+      }
+      if (k >= len) {
+        throw new TypeError('Reduce of empty array with no initial value')
+      }
+      value = t[k++]
+    }
+
+    for (; k < len; k++) {
+      if (k in t) {
+        value = callback(value, t[k], k, t)
+      }
+    }
+    return value
+  },
+
+  arraySome: function (value, callback, thisArg) {
+    // Source: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/some
+    if (value == null) {
+      throw new TypeError('Array.prototype.some called on null or undefined')
+    }
+
+    if (typeof callback !== 'function') {
+      throw new TypeError()
+    }
+
+    var t = Object(value)
+    var len = t.length >>> 0
+
+    if (!thisArg) {
+      thisArg = void 0
+    }
+
+    for (var i = 0; i < len; i++) {
+      if (i in t && callback.call(thisArg, t[i], i, t)) {
+        return true
+      }
+    }
+    return false
+  },
+
+  arrayMap: function (arrayValue, callback, thisArg) {
+    // Source https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/Map
+    var T, A, k
+
+    if (this == null) {
+      throw new TypeError(' this is null or not defined')
+    }
+    var O = Object(arrayValue)
+    var len = O.length >>> 0
+
+    if (typeof callback !== 'function') {
+      throw new TypeError(callback + ' is not a function')
+    }
+    if (arguments.length > 1) {
+      T = thisArg
+    }
+    A = new Array(len)
+    k = 0
+    while (k < len) {
+      var kValue, mappedValue
+      if (k in O) {
+        kValue = O[k]
+        mappedValue = callback.call(T, kValue, k, O)
+        A[k] = mappedValue
+      }
+      k++
+    }
+    return A
+  },
+
+  arrayIndexOf: function (arrayVal, searchElement, fromIndex) {
+    // Source: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/indexOf
+    var k
+    if (arrayVal == null) {
+      throw new TypeError('"arrayVal" is null or not defined')
+    }
+
+    var o = Object(arrayVal)
+    var len = o.length >>> 0
+
+    if (len === 0) {
+      return -1
+    }
+
+    var n = +fromIndex || 0
+
+    if (Math.abs(n) === Infinity) {
+      n = 0
+    }
+
+    if (n >= len) {
+      return -1
+    }
+
+    k = Math.max(n >= 0 ? n : len - Math.abs(n), 0)
+
+    while (k < len) {
+      if (k in o && o[k] === searchElement) {
+        return k
+      }
+      k++
+    }
+    return -1
+  },
+
+  functionBind: function (func, oThis) {
+    // Source: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/bind
+    var aArgs = Array.prototype.slice.call(arguments, 2)
+    var FNOP = function () {}
+    var fBound = function () {
+      return func.apply(oThis, aArgs.concat(Array.prototype.slice.call(arguments)))
+    }
+
+    FNOP.prototype = func.prototype
+    fBound.prototype = new FNOP()
+    return fBound
+  },
+
+  getRandomInt: function (min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min
+  },
+
+  isUndefined: function (obj) {
+    return (typeof obj) === 'undefined'
+  },
+
+  isCORSSupported: function () {
+    var xhr = new window.XMLHttpRequest()
+    return 'withCredentials' in xhr
+  },
+
+  getCurrentScript: function () {
+    // Source http://www.2ality.com/2014/05/current-script.html
+    return document.currentScript || (function () {
+      var scripts = document.getElementsByTagName('script')
+      return scripts[scripts.length - 1]
+    })()
+  },
+
+  generateUuid: function () {
+    function _p8 (s) {
+      var p = (Math.random().toString(16) + '000000000').substr(2, 8)
+      return s ? '-' + p.substr(0, 4) + '-' + p.substr(4, 4) : p
+    }
+    return _p8() + _p8(true) + _p8(true) + _p8()
+  }
+
+}
+
+function isObject (value) {
+  // http://jsperf.com/isobject4
+  return value !== null && typeof value === 'object'
+}
+
+function isFunction (value) {
+  return typeof value === 'function'
+}
+
+},{}],20:[function(_dereq_,module,exports){
+var TransactionService = _dereq_('./transactionService')
+var ZoneService = _dereq_('./zoneService')
+var utils = _dereq_('../lib/utils')
+
+function ServiceContainer (serviceFactory) {
+  this.serviceFactory = serviceFactory
+  this.services = {}
+  this.services.configService = this.serviceFactory.getConfigService()
+  this.services.logger = this.serviceFactory.getLogger()
+  this.services.zoneService = this.createZoneService()
+}
+
+ServiceContainer.prototype.initialize = function () {
+  var configService = this.services.configService
+  var logger = this.services.logger
+  var zoneService = this.services.zoneService
+
+  var opbeatBackend = this.services.opbeatBackend = this.serviceFactory.getOpbeatBackend()
+  var transactionService = this.services.transactionService = this.services.transactionService = new TransactionService(zoneService, this.services.logger, configService, opbeatBackend)
+  transactionService.scheduleTransactionSend()
+
+  if (utils.isUndefined(window.opbeatApi)) {
+    window.opbeatApi = {}
+  }
+  window.opbeatApi.subscribeToTransactions = transactionService.subscribe.bind(transactionService)
+
+  if (!utils.isUndefined(window.opbeatApi.onload)) {
+    var onOpbeatLoaded = window.opbeatApi.onload
+    onOpbeatLoaded.forEach(function (fn) {
+      try {
+        fn()
+      } catch (error) {
+        logger.error(error)
+      }
+    })
+  }
+}
+
+ServiceContainer.prototype.createZoneService = function () {
+  var logger = this.services.logger
+
+  return new ZoneService(window.Zone.current, logger, this.services.configService)
+}
+
+module.exports = ServiceContainer
+
+},{"../lib/utils":19,"./transactionService":24,"./zoneService":25}],21:[function(_dereq_,module,exports){
+var frames = _dereq_('../exceptions/frames')
+var traceCache = _dereq_('./traceCache')
+var utils = _dereq_('../lib/utils')
+
+function Trace (transaction, signature, type, options) {
+  this.transaction = transaction
+  this.signature = signature
+  this.type = type
+  this.ended = false
+  this._parent = null
+  this._diff = null
+  this._end = null
+
+  // Start timers
+  this._start = window.performance.now()
+
+  this._isFinish = new Promise(function (resolve, reject) {
+    this._markFinishedFunc = resolve
+  }.bind(this))
+
+  if (utils.isUndefined(options) || options == null) {
+    options = {}
+  }
+  var shouldGenerateStackFrames = options['enableStackFrames']
+
+  if (shouldGenerateStackFrames) {
+    this.getTraceStackFrames(function (frames) {
+      if (frames) {
+        this.frames = frames.reverse() // Reverse frames to make Opbeat happy
+      }
+      this._markFinishedFunc() // Mark the trace as finished
+    }.bind(this))
+  } else {
+    this._markFinishedFunc() // Mark the trace as finished
+  }
+}
+
+Trace.prototype.calcDiff = function () {
+  if (!this._end || !this._start) {
+    return
+  }
+  this._diff = this._end - this._start
+}
+
+Trace.prototype.end = function () {
+  this._end = window.performance.now()
+
+  this.calcDiff()
+  this.ended = true
+  if (!utils.isUndefined(this.transaction) && typeof this.transaction._onTraceEnd === 'function') {
+    this.transaction._onTraceEnd(this)
+  }
+}
+
+Trace.prototype.duration = function () {
+  if (!this.ended || !this._start) {
+    return null
+  }
+  this._diff = this._end - this._start
+
+  return parseFloat(this._diff)
+}
+
+Trace.prototype.startTime = function () {
+  if (!this.ended || !this.transaction.ended) {
+    return null
+  }
+
+  return this._start
+}
+
+Trace.prototype.ancestors = function () {
+  var parent = this.parent()
+  if (!parent) {
+    return []
+  } else {
+    return [parent.signature]
+  }
+}
+
+Trace.prototype.parent = function () {
+  return this._parent
+}
+
+Trace.prototype.setParent = function (val) {
+  this._parent = val
+}
+
+Trace.prototype.getFingerprint = function () {
+  var key = [this.transaction.name, this.signature, this.type]
+
+  // Iterate over parents
+  var prev = this._parent
+  while (prev) {
+    key.push(prev.signature)
+    prev = prev._parent
+  }
+
+  return key.join('-')
+}
+
+Trace.prototype.getTraceStackFrames = function (callback) {
+  // Use callbacks instead of Promises to keep the stack
+  var key = this.getFingerprint()
+  var traceFrames = traceCache.get(key)
+  if (traceFrames) {
+    callback(traceFrames)
+  } else {
+    frames.getFramesForCurrent().then(function (traceFrames) {
+      traceCache.set(key, traceFrames)
+      callback(traceFrames)
+    })['catch'](function () {
+      callback(null)
+    })
+  }
+}
+
+module.exports = Trace
+
+},{"../exceptions/frames":12,"../lib/utils":19,"./traceCache":22}],22:[function(_dereq_,module,exports){
+var SimpleCache = _dereq_('simple-lru-cache')
+
+module.exports = new SimpleCache({
+  'maxSize': 5000
+})
+
+},{"simple-lru-cache":27}],23:[function(_dereq_,module,exports){
+var Trace = _dereq_('./trace')
+var utils = _dereq_('../lib/utils')
+
+var Transaction = function (name, type, options) {
+  this.metadata = {}
+  this.name = name
+  this.type = type
+  this.ended = false
+  this._markDoneAfterLastTrace = false
+  this._isDone = false
+  this._options = options
+  if (typeof options === 'undefined') {
+    this._options = {}
+  }
+
+  this.contextInfo = {
+    debug: {},
+    browser: {
+      location: window.location.href
+    }
+  }
+  if (this._options.sendVerboseDebugInfo) {
+    this.contextInfo.debug.log = []
+    this.debugLog('Transaction', name, type)
+  }
+
+  this.traces = []
+  this._activeTraces = {}
+
+  this._scheduledTasks = {}
+
+  this.events = {}
+
+  Promise.call(this.donePromise = Object.create(Promise.prototype), function (resolve, reject) {
+    this._resolve = resolve
+    this._reject = reject
+  }.bind(this.donePromise))
+
+  // A transaction should always have a root trace spanning the entire transaction.
+  this._rootTrace = this.startTrace('transaction', 'transaction', {enableStackFrames: false})
+  this._startStamp = new Date()
+  this._start = this._rootTrace._start
+
+  this.duration = this._rootTrace.duration.bind(this._rootTrace)
+  this.nextId = 0
+}
+
+Transaction.prototype.debugLog = function () {
+  if (this._options.sendVerboseDebugInfo) {
+    var messages = (arguments.length === 1 ? [arguments[0]] : Array.apply(null, arguments))
+    messages.unshift(Date.now().toString())
+    this.contextInfo.debug.log.push(messages.join(' - '))
+  }
+}
+
+Transaction.prototype.redefine = function (name, type, options) {
+  this.debugLog('redefine', name, type)
+  this.name = name
+  this.type = type
+  this._options = options
+}
+
+Transaction.prototype.startTrace = function (signature, type, options) {
+  // todo: should not accept more traces if the transaction is alreadyFinished
+  this.debugLog('startTrace', signature, type)
+  var opts = typeof options === 'undefined' ? {} : options
+  opts.enableStackFrames = this._options.enableStackFrames === true && opts.enableStackFrames !== false
+
+  var trace = new Trace(this, signature, type, opts)
+  trace.traceId = this.nextId
+  this.nextId++
+  if (this._rootTrace) {
+    trace.setParent(this._rootTrace)
+    this._activeTraces[trace.traceId] = trace
+  }
+
+  return trace
+}
+
+Transaction.prototype.recordEvent = function (e) {
+  var event = this.events[e.name]
+  if (utils.isUndefined(event)) {
+    event = { name: e.name, start: e.start, end: e.end, time: e.end - e.start, count: 0 }
+    this.events[event.name] = event
+  } else {
+    event.time += (e.end - e.start)
+    event.count++
+    event.end = e.end
+  }
+}
+
+Transaction.prototype.isFinished = function () {
+  var scheduledTasks = Object.keys(this._scheduledTasks)
+  this.debugLog('isFinished scheduledTasks.length', scheduledTasks.length)
+  return (scheduledTasks.length === 0)
+}
+
+Transaction.prototype.detectFinish = function () {
+  if (this.isFinished()) this.end()
+}
+
+Transaction.prototype.end = function () {
+  if (this.ended) {
+    return
+  }
+  this.debugLog('end')
+  this.ended = true
+  this._rootTrace.end()
+
+  if (this.isFinished() === true) {
+    this._finish()
+  }
+  return this.donePromise
+}
+
+Transaction.prototype.addTask = function (taskId) {
+  // todo: should not accept more tasks if the transaction is alreadyFinished]
+  this.debugLog('addTask', taskId)
+  this._scheduledTasks[taskId] = taskId
+}
+
+Transaction.prototype.removeTask = function (taskId) {
+  this.debugLog('removeTask', taskId)
+  this.contextInfo.debug.lastRemovedTask = taskId
+  delete this._scheduledTasks[taskId]
+}
+
+Transaction.prototype.addEndedTraces = function (existingTraces) {
+  this.traces = this.traces.concat(existingTraces)
+}
+
+Transaction.prototype._onTraceEnd = function (trace) {
+  this.traces.push(trace)
+  trace._scheduledTasks = Object.keys(this._scheduledTasks)
+  // Remove trace from _activeTraces
+  delete this._activeTraces[trace.traceId]
+}
+
+Transaction.prototype._finish = function () {
+  if (this._alreadFinished === true) {
+    return
+  }
+
+  this._alreadFinished = true
+
+  for (var key in this.events) {
+    var event = this.events[key]
+    var eventTrace = new Trace(this, key, key, this._options)
+    eventTrace.ended = true
+    eventTrace._start = event.start
+    eventTrace._diff = event.time
+    eventTrace._end = event.end
+    eventTrace.setParent(this._rootTrace)
+    this.traces.push(eventTrace)
+  }
+
+  this._adjustStartToEarliestTrace()
+  this._adjustEndToLatestTrace()
+
+  var self = this
+  var whenAllTracesFinished = self.traces.map(function (trace) {
+    return trace._isFinish
+  })
+
+  Promise.all(whenAllTracesFinished).then(function () {
+    self.donePromise._resolve(self)
+  })
+}
+
+Transaction.prototype._adjustEndToLatestTrace = function () {
+  var latestTrace = findLatestTrace(this.traces)
+  if (typeof latestTrace !== 'undefined') {
+    this._rootTrace._end = latestTrace._end
+    this._rootTrace.calcDiff()
+  }
+}
+
+Transaction.prototype._adjustStartToEarliestTrace = function () {
+  var trace = getEarliestTrace(this.traces)
+
+  if (trace) {
+    this._rootTrace._start = trace._start
+    this._rootTrace.calcDiff()
+    this._start = this._rootTrace._start
+  }
+}
+
+function getEarliestTrace (traces) {
+  var earliestTrace = null
+
+  traces.forEach(function (trace) {
+    if (!earliestTrace) {
+      earliestTrace = trace
+    }
+    if (earliestTrace && earliestTrace._start > trace._start) {
+      earliestTrace = trace
+    }
+  })
+
+  return earliestTrace
+}
+
+function findLatestTrace (traces) {
+  var latestTrace = null
+
+  traces.forEach(function (trace) {
+    if (!latestTrace) {
+      latestTrace = trace
+    }
+    if (latestTrace && latestTrace._end < trace._end) {
+      latestTrace = trace
+    }
+  })
+
+  return latestTrace
+}
+
+module.exports = Transaction
+
+},{"../lib/utils":19,"./trace":21}],24:[function(_dereq_,module,exports){
+var Transaction = _dereq_('./transaction')
+var utils = _dereq_('../lib/utils')
+var Subscription = _dereq_('../common/subscription')
+
+function TransactionService (zoneService, logger, config, opbeatBackend) {
+  this._config = config
+  if (typeof config === 'undefined') {
+    logger.debug('TransactionService: config is not provided')
+  }
+  this._queue = []
+  this._logger = logger
+  this._opbeatBackend = opbeatBackend
+  this._zoneService = zoneService
+
+  this.transactions = []
+  this.nextId = 1
+
+  this.taskMap = {}
+
+  this._queue = []
+
+  this._subscription = new Subscription()
+
+  var transactionService = this
+
+  function onBeforeInvokeTask (task) {
+    if (task.source === 'XMLHttpRequest.send' && task.trace && !task.trace.ended) {
+      task.trace.end()
+    }
+    transactionService.logInTransaction('Executing', task.taskId)
+  }
+  zoneService.spec.onBeforeInvokeTask = onBeforeInvokeTask
+
+  function onScheduleTask (task) {
+    if (task.source === 'XMLHttpRequest.send') {
+      var trace = transactionService.startTrace(task['XHR']['method'] + ' ' + task['XHR']['url'], 'ext.HttpRequest', {'enableStackFrames': false})
+      task.trace = trace
+    }
+    transactionService.addTask(task.taskId)
+  }
+  zoneService.spec.onScheduleTask = onScheduleTask
+
+  function onInvokeTask (task) {
+    transactionService.removeTask(task.taskId)
+    transactionService.detectFinish()
+  }
+  zoneService.spec.onInvokeTask = onInvokeTask
+
+  function onCancelTask (task) {
+    transactionService.removeTask(task.taskId)
+    transactionService.detectFinish()
+  }
+  zoneService.spec.onCancelTask = onCancelTask
+}
+
+TransactionService.prototype.getTransaction = function (id) {
+  return this.transactions[id]
+}
+
+TransactionService.prototype.createTransaction = function (name, type, options) {
+  var tr = new Transaction(name, type, options)
+  tr.contextInfo.debug.zone = this._zoneService.getCurrentZone().name
+  this._zoneService.set('transaction', tr)
+  if (this._config.get('performance.checkBrowserResponsiveness')) {
+    this.startCounter(tr)
+  }
+  return tr
+}
+
+TransactionService.prototype.startCounter = function (transaction) {
+  transaction.browserResponsivenessCounter = 0
+  var interval = this._config.get('performance.browserResponsivenessInterval')
+  if (typeof interval === 'undefined') {
+    this._logger.debug('browserResponsivenessInterval is undefined!')
+    return
+  }
+  this._zoneService.runOuter(function () {
+    var id = setInterval(function () {
+      if (transaction.ended) {
+        window.clearInterval(id)
+      } else {
+        transaction.browserResponsivenessCounter++
+      }
+    }, interval)
+  })
+}
+
+TransactionService.prototype.getCurrentTransaction = function () {
+  var tr = this._zoneService.get('transaction')
+  if (!utils.isUndefined(tr) && !tr.ended) {
+    return tr
+  }
+}
+
+TransactionService.prototype.startTransaction = function (name, type) {
+  var self = this
+
+  var perfOptions = this._config.get('performance')
+  if (!perfOptions.enable || !this._zoneService.isOpbeatZone()) {
+    return
+  }
+
+  if (type === 'interaction' && !perfOptions.captureInteractions) {
+    return
+  }
+
+  var tr = this.getCurrentTransaction()
+
+  if (tr) {
+    if (tr.name !== 'ZoneTransaction') {
+      // todo: need to handle cases in which the transaction has active traces and/or scheduled tasks
+      this.logInTransaction('Ending early to start a new transaction:', name, type)
+      this._logger.debug('Ending old transaction', tr)
+      tr.end()
+      tr = this.createTransaction(name, type, perfOptions)
+    } else {
+      tr.redefine(name, type, perfOptions)
+    }
+  } else {
+    tr = this.createTransaction(name, type, perfOptions)
+  }
+
+  if (this.transactions.indexOf(tr) === -1) {
+    this._logger.debug('TransactionService.startTransaction', tr)
+    var p = tr.donePromise
+    p.then(function (t) {
+      self._logger.debug('TransactionService transaction finished', tr)
+      self.add(tr)
+      self._subscription.applyAll(self, [tr])
+
+      var index = self.transactions.indexOf(tr)
+      if (index !== -1) {
+        self.transactions.splice(index, 1)
+      }
+    })
+    this.transactions.push(tr)
+  }
+
+  return tr
+}
+
+TransactionService.prototype.startTrace = function (signature, type, options) {
+  var perfOptions = this._config.get('performance')
+  if (!perfOptions.enable || !this._zoneService.isOpbeatZone()) {
+    return
+  }
+
+  var trans = this.getCurrentTransaction()
+
+  if (trans) {
+    this._logger.debug('TransactionService.startTrace', signature, type)
+  } else {
+    trans = this.createTransaction('ZoneTransaction', 'transaction', perfOptions)
+    this._logger.debug('TransactionService.startTrace - ZoneTransaction', signature, type)
+  }
+
+  var trace = trans.startTrace(signature, type, options)
+  // var zone = this._zoneService.getCurrentZone()
+  // trace._zone = 'Zone(' + zone.$id + ') ' // parent(' + zone.parent.$id + ') '
+  return trace
+}
+
+TransactionService.prototype.add = function (transaction) {
+  var perfOptions = this._config.get('performance')
+  if (!perfOptions.enable) {
+    return
+  }
+
+  this._queue.push(transaction)
+  this._logger.debug('TransactionService.add', transaction)
+}
+
+TransactionService.prototype.getTransactions = function () {
+  return this._queue
+}
+
+TransactionService.prototype.clearTransactions = function () {
+  this._queue = []
+}
+
+TransactionService.prototype.subscribe = function (fn) {
+  return this._subscription.subscribe(fn)
+}
+
+TransactionService.prototype.addTask = function (taskId) {
+  var tr = this._zoneService.get('transaction')
+  if (!utils.isUndefined(tr) && !tr.ended) {
+    tr.addTask(taskId)
+    this._logger.debug('TransactionService.addTask', taskId)
+  }
+}
+TransactionService.prototype.removeTask = function (taskId) {
+  var tr = this._zoneService.get('transaction')
+  if (!utils.isUndefined(tr) && !tr.ended) {
+    tr.removeTask(taskId)
+    this._logger.debug('TransactionService.removeTask', taskId)
+  }
+}
+TransactionService.prototype.logInTransaction = function () {
+  var tr = this._zoneService.get('transaction')
+  if (!utils.isUndefined(tr) && !tr.ended) {
+    tr.debugLog.apply(tr, arguments)
+  }
+}
+
+TransactionService.prototype.detectFinish = function () {
+  var tr = this._zoneService.get('transaction')
+  if (!utils.isUndefined(tr) && !tr.ended) {
+    tr.detectFinish()
+    this._logger.debug('TransactionService.detectFinish')
+  }
+}
+
+TransactionService.prototype.scheduleTransactionSend = function () {
+  var logger = this._logger
+  var opbeatBackend = this._opbeatBackend
+  var self = this
+
+  setInterval(function () {
+    var transactions = self.getTransactions()
+    if (transactions.length === 0) {
+      return
+    }
+    logger.debug('Sending Transactions to opbeat.', transactions.length)
+    // todo: if transactions are already being sent, should check
+    opbeatBackend.sendTransactions(transactions)
+    self.clearTransactions()
+  }, 5000)
+}
+
+module.exports = TransactionService
+
+},{"../common/subscription":9,"../lib/utils":19,"./transaction":23}],25:[function(_dereq_,module,exports){
+var Subscription = _dereq_('../common/subscription')
+var patchUtils = _dereq_('../common/patchUtils')
+var opbeatTaskSymbol = patchUtils.opbeatSymbol('taskData')
+
+var urlSympbol = patchUtils.opbeatSymbol('url')
+var methodSymbol = patchUtils.opbeatSymbol('method')
+
+var XMLHttpRequest_send = 'XMLHttpRequest.send'
+
+var opbeatDataSymbol = patchUtils.opbeatSymbol('opbeatData')
+
+function ZoneService (zone, logger, config) {
+  this.events = new Subscription()
+
+  var nextId = 0
+
+  this.events = new Subscription()
+  // var zoneService = this
+  function noop () { }
+  var spec = this.spec = {
+    onScheduleTask: noop,
+    onBeforeInvokeTask: noop,
+    onInvokeTask: noop,
+    onCancelTask: noop,
+    onHandleError: noop
+  }
+
+  var zoneConfig = {
+    name: 'opbeatRootZone',
+    onScheduleTask: function (parentZoneDelegate, currentZone, targetZone, task) {
+      if (task.type === 'eventTask' && task.data.eventName === 'opbeatImmediatelyFiringEvent') {
+        task.data.handler(task.data)
+        return task
+      }
+
+      var hasTarget = task.data && task.data.target
+      if (hasTarget && typeof task.data.target[opbeatDataSymbol] === 'undefined') {
+        task.data.target[opbeatDataSymbol] = {registeredEventListeners: {}}
+      }
+
+      logger.trace('zoneservice.onScheduleTask', task.source, ' type:', task.type)
+      if (task.type === 'macroTask') {
+        logger.trace('Zone: ', targetZone.name)
+        var taskId = nextId++
+        var opbeatTask = {
+          taskId: task.source + taskId,
+          source: task.source,
+          type: task.type
+        }
+
+        if (task.source === 'setTimeout') {
+          if (task.data.args[1] === 0) {
+            task[opbeatTaskSymbol] = opbeatTask
+            spec.onScheduleTask(opbeatTask)
+          }
+        } else if (task.source === XMLHttpRequest_send) {
+          /*
+                  "XMLHttpRequest.addEventListener:load"
+                  "XMLHttpRequest.addEventListener:error"
+                  "XMLHttpRequest.addEventListener:abort"
+                  "XMLHttpRequest.send"
+                  "XMLHttpRequest.addEventListener:readystatechange"
+          */
+
+          opbeatTask['XHR'] = {
+            resolved: false,
+            'send': false,
+            url: task.data.target[urlSympbol],
+            method: task.data.target[methodSymbol]
+          }
+
+          // target for event tasks is different instance from the XMLHttpRequest, on mobile browsers
+          // A hack to get the correct target for event tasks
+          task.data.target.addEventListener('opbeatImmediatelyFiringEvent', function (event) {
+            if (typeof event.target[opbeatDataSymbol] !== 'undefined') {
+              task.data.target[opbeatDataSymbol] = event.target[opbeatDataSymbol]
+            } else {
+              task.data.target[opbeatDataSymbol] = event.target[opbeatDataSymbol] = {registeredEventListeners: {}}
+            }
+          })
+
+          task.data.target[opbeatDataSymbol].task = opbeatTask
+          task.data.target[opbeatDataSymbol].typeName = 'XMLHttpRequest'
+
+          spec.onScheduleTask(opbeatTask)
+        }
+      } else if (task.type === 'eventTask' && hasTarget && (task.data.eventName === 'readystatechange' || task.data.eventName === 'load')) {
+        task.data.target[opbeatDataSymbol].registeredEventListeners[task.data.eventName] = {resolved: false}
+      }
+
+      var delegateTask = parentZoneDelegate.scheduleTask(targetZone, task)
+      return delegateTask
+    },
+    onInvokeTask: function (parentZoneDelegate, currentZone, targetZone, task, applyThis, applyArgs) {
+      logger.trace('zoneservice.onInvokeTask', task.source, ' type:', task.type)
+      var hasTarget = task.data && task.data.target
+      var result
+
+      if (hasTarget && task.data.target[opbeatDataSymbol].typeName === 'XMLHttpRequest') {
+        var opbeatData = task.data.target[opbeatDataSymbol]
+        logger.trace('opbeatData', opbeatData)
+        var opbeatTask = opbeatData.task
+
+        if (opbeatTask && task.data.eventName === 'readystatechange' && task.data.target.readyState === task.data.target.DONE) {
+          opbeatData.registeredEventListeners['readystatechange'].resolved = true
+          spec.onBeforeInvokeTask(opbeatTask)
+        } else if (opbeatTask && task.data.eventName === 'load' && 'load' in opbeatData.registeredEventListeners) {
+          opbeatData.registeredEventListeners.load.resolved = true
+        } else if (opbeatTask && task.source === XMLHttpRequest_send) {
+          opbeatTask.XHR.resolved = true
+        }
+
+        result = parentZoneDelegate.invokeTask(targetZone, task, applyThis, applyArgs)
+        if (opbeatTask && (!opbeatData.registeredEventListeners['load'] || opbeatData.registeredEventListeners['load'].resolved) && (!opbeatData.registeredEventListeners['readystatechange'] || opbeatData.registeredEventListeners['readystatechange'].resolved) && opbeatTask.XHR.resolved) {
+          spec.onInvokeTask(opbeatTask)
+        }
+      } else if (task[opbeatTaskSymbol] && (task.source === 'setTimeout')) {
+        spec.onBeforeInvokeTask(task[opbeatTaskSymbol])
+        result = parentZoneDelegate.invokeTask(targetZone, task, applyThis, applyArgs)
+        spec.onInvokeTask(task[opbeatTaskSymbol])
+      } else {
+        result = parentZoneDelegate.invokeTask(targetZone, task, applyThis, applyArgs)
+      }
+      return result
+    },
+    onCancelTask: function (parentZoneDelegate, currentZone, targetZone, task) {
+      // logger.trace('Zone: ', targetZone.name)
+      var opbeatTask
+      if (task.type === 'macroTask') {
+        if (task.source === XMLHttpRequest_send) {
+          opbeatTask = task.data.target[opbeatDataSymbol].task
+          spec.onCancelTask(opbeatTask)
+        } else if (task[opbeatTaskSymbol] && (task.source === 'setTimeout')) {
+          opbeatTask = task[opbeatTaskSymbol]
+          spec.onCancelTask(opbeatTask)
+        }
+      }
+      return parentZoneDelegate.cancelTask(targetZone, task)
+    }
+  // onHandleError: function (parentZoneDelegate, currentZone, targetZone, error) {
+  //   spec.onHandleError(error)
+  //   parentZoneDelegate.handleError(targetZone, error)
+  // }
+  }
+
+  // if (config.get('debug') === true) {
+  //   zoneConfig.properties = {opbeatZoneData: {name: 'opbeatRootZone', children: []}}
+  //   zoneConfig.onFork = function (parentZoneDelegate, currentZone, targetZone, zoneSpec) {
+  //     var childZone = parentZoneDelegate.fork(targetZone, zoneSpec)
+  //     console.log('onFork: ', arguments)
+  //     console.log('onFork: ', childZone)
+
+  //     var childZoneData = {name: childZone.name}
+
+  //     if (targetZone._properties['opbeatZoneData']) {
+  //       targetZone._properties['opbeatZoneData'].children.push(childZoneData)
+  //     } else {
+  //       targetZone._properties['opbeatZoneData'] = {
+  //         name: targetZone.name,
+  //         children: [childZoneData]
+  //       }
+  //     }
+  //     console.log('onFork:opbeatZoneData:', targetZone._properties['opbeatZoneData'])
+  //     return childZone
+  //   }
+  // }
+  this.outer = zone
+  this.zone = zone.fork(zoneConfig)
+}
+
+ZoneService.prototype.set = function (key, value) {
+  window.Zone.current._properties[key] = value
+}
+ZoneService.prototype.get = function (key) {
+  return window.Zone.current.get(key)
+}
+
+ZoneService.prototype.getCurrentZone = function () {
+  return window.Zone.current
+}
+
+ZoneService.prototype.isOpbeatZone = function () {
+  return this.zone.name === window.Zone.current.name
+}
+
+ZoneService.prototype.runOuter = function (fn) {
+  return this.outer.run(fn)
+}
+
+ZoneService.prototype.runInOpbeatZone = function runInOpbeatZone (fn, applyThis, applyArgs) {
+  if (this.zone.name === window.Zone.current.name) {
+    return fn.apply(applyThis, applyArgs)
+  } else {
+    return this.zone.run(fn, applyThis, applyArgs)
+  }
+}
+
+module.exports = ZoneService
+
+},{"../common/patchUtils":6,"../common/subscription":9}],26:[function(_dereq_,module,exports){
+function ZoneServiceMock () {
+  function noop () { }
+
+  this.spec = {
+    onScheduleTask: noop,
+    onInvokeTask: noop,
+    onCancelTask: noop
+  }
+
+  this.zone = {name: 'opbeatMockZone'}
+  this.get = function (key) {
+    return this.zone[key]
+  }
+  this.set = function (key, value) {
+    this.zone[key] = value
+  }
+  this.runOuter = function (fn) {
+    return fn()
+  }
+  this.zone.run = function (callback, applyThis, applyArgs, source) {
+    return callback.apply(applyThis, applyArgs)
+  }
+
+  this.runInOpbeatZone = function (fn, applyThis, applyArgs) {
+    return fn.apply(applyThis, applyArgs)
+  }
+
+  this.isOpbeatZone = function () {
+    return true
+  }
+
+  this.getCurrentZone = function () {
+    return this.zone
+  }
+}
+module.exports = ZoneServiceMock
+
+},{}],27:[function(_dereq_,module,exports){
+module.exports = _dereq_('./lib/simple_lru.js');
+
+},{"./lib/simple_lru.js":28}],28:[function(_dereq_,module,exports){
+"use strict";
+
+/**
+ * LRU cache based on a double linked list
+ */
+
+function ListElement(before,next,key,value){
+    this.before = before
+    this.next = next
+    this.key = key
+    this.value = value
+}
+
+ListElement.prototype.setKey = function(key){
+    this.key = key
+}
+
+ListElement.prototype.setValue = function(value){
+    this.value = value
+}
+
+
+function Cache(options){
+    if(!options)
+        options = {}
+    this.maxSize = options.maxSize 
+    this.reset()
+}
+
+
+Cache.prototype.reset = function(){
+    this.size = 0   
+    this.cache = {}
+    this.tail = undefined
+    this.head = undefined
+}
+
+
+Cache.prototype.get = function(key,hit){
+    var cacheVal = this.cache[key]
+    /*
+     * Define if the egt function should hit the value to move
+     * it to the head of linked list  
+     */
+    hit = hit != undefined && hit != null ? hit : true;
+    if(cacheVal && hit)
+        this.hit(cacheVal)
+    else
+        return undefined
+    return cacheVal.value
+}
+
+Cache.prototype.set = function(key,val,hit){
+    var actual = this.cache[key]
+    /*
+     * Define if the set function should hit the value to move
+     * it to the head of linked list  
+     */
+     hit = hit != undefined && hit != null ? hit : true;
+    
+    
+    if(actual){
+        actual.value = val
+        if(hit) this.hit(actual)
+    }else{
+        var cacheVal
+        if(this.size >= this.maxSize){
+            var tailKey = this.tail.key 
+            this.detach(this.tail)
+            
+            /*
+             * If max is reached we'llreuse object to minimize GC impact 
+             * when the objects are cached short time
+             */
+            cacheVal = this.cache[tailKey]
+            delete this.cache[tailKey]
+
+            cacheVal.next = undefined
+            cacheVal.before = undefined
+            
+            /*
+             * setters reuse the array object 
+             */
+            cacheVal.setKey(key)
+            cacheVal.setValue(val)
+        }
+
+        cacheVal = cacheVal ? cacheVal : new ListElement(undefined,undefined,key,val)
+        this.cache[key] = cacheVal
+        this.attach(cacheVal)
+    }
+}
+
+Cache.prototype.del = function(key){
+    var val = this.cache[key]
+    if(!val)
+        return;
+    this.detach(val)
+    delete this.cache[key]
+}
+
+Cache.prototype.hit = function(cacheVal){
+    //Send cacheVal to the head of list
+    this.detach(cacheVal)
+    this.attach(cacheVal)
+}
+
+Cache.prototype.attach = function(element){
+    if(!element)
+        return;
+    element.before = undefined
+    element.next = this.head
+    this.head = element
+    if(!element.next)
+       this.tail = element
+    else
+        element.next.before = element
+    this.size++ 
+}
+
+Cache.prototype.detach = function(element){
+    if(!element)
+        return;
+    var before = element.before
+    var next = element.next
+    if(before){
+        before.next = next
+    }else{
+        this.head = next
+    }
+    if(next){
+        next.before = before
+    }else{
+        this.tail = before
+    }
+    this.size--
+}
+
+Cache.prototype.forEach = function(callback){
+    var self = this
+    Object.keys(this.cache).forEach(function(key){
+        var val = self.cache[key]
+        callback(val.value,key)
+    })
+}
+module.exports=Cache
+
+},{}],29:[function(_dereq_,module,exports){
+(function (define){
+(function (root, factory) {
+    'use strict';
+    // Universal Module Definition (UMD) to support AMD, CommonJS/Node.js, Rhino, and browsers.
+
+    /* istanbul ignore next */
+    if (typeof define === 'function' && define.amd) {
+        define('stack-generator', ['stackframe'], factory);
+    } else if (typeof exports === 'object') {
+        module.exports = factory(_dereq_('stackframe'));
+    } else {
+        root.StackGenerator = factory(root.StackFrame);
+    }
+}(this, function (StackFrame) {
+    return {
+        backtrace: function StackGenerator$$backtrace(opts) {
+            var stack = [];
+            var maxStackSize = 10;
+
+            if (typeof opts === 'object' && typeof opts.maxStackSize === 'number') {
+                maxStackSize = opts.maxStackSize;
+            }
+
+            var curr = arguments.callee;
+            while (curr && stack.length < maxStackSize) {
+                // Allow V8 optimizations
+                var args = new Array(curr['arguments'].length);
+                for(var i = 0; i < args.length; ++i) {
+                    args[i] = curr['arguments'][i];
+                }
+                if (/function(?:\s+([\w$]+))+\s*\(/.test(curr.toString())) {
+                    stack.push(new StackFrame(RegExp.$1 || undefined, args));
+                } else {
+                    stack.push(new StackFrame(undefined, args));
+                }
+
+                try {
+                    curr = curr.caller;
+                } catch (e) {
+                    break;
+                }
+            }
+            return stack;
+        }
+    };
+}));
+
+}).call(this,undefined)
+},{"stackframe":30}],30:[function(_dereq_,module,exports){
+(function (define){
+(function (root, factory) {
+    'use strict';
+    // Universal Module Definition (UMD) to support AMD, CommonJS/Node.js, Rhino, and browsers.
+
+    /* istanbul ignore next */
+    if (typeof define === 'function' && define.amd) {
+        define('stackframe', [], factory);
+    } else if (typeof exports === 'object') {
+        module.exports = factory();
+    } else {
+        root.StackFrame = factory();
+    }
+}(this, function () {
+    'use strict';
+    function _isNumber(n) {
+        return !isNaN(parseFloat(n)) && isFinite(n);
+    }
+
+    function StackFrame(functionName, args, fileName, lineNumber, columnNumber, source) {
+        if (functionName !== undefined) {
+            this.setFunctionName(functionName);
+        }
+        if (args !== undefined) {
+            this.setArgs(args);
+        }
+        if (fileName !== undefined) {
+            this.setFileName(fileName);
+        }
+        if (lineNumber !== undefined) {
+            this.setLineNumber(lineNumber);
+        }
+        if (columnNumber !== undefined) {
+            this.setColumnNumber(columnNumber);
+        }
+        if (source !== undefined) {
+            this.setSource(source);
+        }
+    }
+
+    StackFrame.prototype = {
+        getFunctionName: function () {
+            return this.functionName;
+        },
+        setFunctionName: function (v) {
+            this.functionName = String(v);
+        },
+
+        getArgs: function () {
+            return this.args;
+        },
+        setArgs: function (v) {
+            if (Object.prototype.toString.call(v) !== '[object Array]') {
+                throw new TypeError('Args must be an Array');
+            }
+            this.args = v;
+        },
+
+        // NOTE: Property name may be misleading as it includes the path,
+        // but it somewhat mirrors V8's JavaScriptStackTraceApi
+        // https://code.google.com/p/v8/wiki/JavaScriptStackTraceApi and Gecko's
+        // http://mxr.mozilla.org/mozilla-central/source/xpcom/base/nsIException.idl#14
+        getFileName: function () {
+            return this.fileName;
+        },
+        setFileName: function (v) {
+            this.fileName = String(v);
+        },
+
+        getLineNumber: function () {
+            return this.lineNumber;
+        },
+        setLineNumber: function (v) {
+            if (!_isNumber(v)) {
+                throw new TypeError('Line Number must be a Number');
+            }
+            this.lineNumber = Number(v);
+        },
+
+        getColumnNumber: function () {
+            return this.columnNumber;
+        },
+        setColumnNumber: function (v) {
+            if (!_isNumber(v)) {
+                throw new TypeError('Column Number must be a Number');
+            }
+            this.columnNumber = Number(v);
+        },
+
+        getSource: function () {
+            return this.source;
+        },
+        setSource: function (v) {
+            this.source = String(v);
+        },
+
+        toString: function() {
+            var functionName = this.getFunctionName() || '{anonymous}';
+            var args = '(' + (this.getArgs() || []).join(',') + ')';
+            var fileName = this.getFileName() ? ('@' + this.getFileName()) : '';
+            var lineNumber = _isNumber(this.getLineNumber()) ? (':' + this.getLineNumber()) : '';
+            var columnNumber = _isNumber(this.getColumnNumber()) ? (':' + this.getColumnNumber()) : '';
+            return functionName + args + fileName + lineNumber + columnNumber;
+        }
+    };
+
+    return StackFrame;
+}));
+
+}).call(this,undefined)
+},{}],31:[function(_dereq_,module,exports){
 (function (process){
 /******/ (function(modules) { // webpackBootstrap
 /******/ 	// The module cache
@@ -1377,7 +4635,7 @@
 /***/ }
 /******/ ]);
 }).call(this,undefined)
-},{}],2:[function(_dereq_,module,exports){
+},{}],32:[function(_dereq_,module,exports){
 var ngOpbeat = _dereq_('./ngOpbeat')
 var patchAngularBootstrap = _dereq_('./patches/bootstrapPatch')
 var patchCommon = _dereq_('opbeat-js-core').patchCommon
@@ -1401,6 +4659,7 @@ function initialize (serviceFactory) {
   }
 
   services.exceptionHandler = serviceFactory.getExceptionHandler()
+  services.exceptionHandler.install()
   alreadyRegistered = registerOpbeatModule(services)
   patchAngularBootstrap(services.zoneService, beforeBootstrap)
 }
@@ -1411,7 +4670,7 @@ function registerOpbeatModule (services) {
 
 module.exports = initialize
 
-},{"./ngOpbeat":3,"./patches/bootstrapPatch":5,"opbeat-js-core":29}],3:[function(_dereq_,module,exports){
+},{"./ngOpbeat":33,"./patches/bootstrapPatch":35,"opbeat-js-core":14}],33:[function(_dereq_,module,exports){
 var patchController = _dereq_('./patches/controllerPatch')
 var patchCompile = _dereq_('./patches/compilePatch')
 var patchRootScope = _dereq_('./patches/rootScopePatch')
@@ -1498,6 +4757,10 @@ function registerOpbeatModule (transactionService, logger, configService, except
       logger.debug('Route change started')
       var transactionName
       if (current.$$route) { // ngRoute
+        // ignoring redirects since we will get another event
+        if (typeof current.$$route.redirectTo !== 'undefined') {
+          return
+        }
         transactionName = current.$$route.originalPath
       } else { // UI Router
         transactionName = current.name
@@ -1548,7 +4811,7 @@ function registerOpbeatModule (transactionService, logger, configService, except
 
 module.exports = registerOpbeatModule
 
-},{"./patches/compilePatch":6,"./patches/controllerPatch":7,"./patches/directivesPatch":8,"./patches/exceptionHandlerPatch":9,"./patches/interactionsPatch":10,"./patches/rootScopePatch":11}],4:[function(_dereq_,module,exports){
+},{"./patches/compilePatch":36,"./patches/controllerPatch":37,"./patches/directivesPatch":38,"./patches/exceptionHandlerPatch":39,"./patches/interactionsPatch":40,"./patches/rootScopePatch":41}],34:[function(_dereq_,module,exports){
 var opbeatCore = _dereq_('opbeat-js-core')
 var ServiceFactory = opbeatCore.ServiceFactory
 var angularInitializer = _dereq_('./angularInitializer')
@@ -1564,7 +4827,7 @@ function init () {
 
 init()
 
-},{"./angularInitializer":2,"opbeat-js-core":29,"zone.js":1}],5:[function(_dereq_,module,exports){
+},{"./angularInitializer":32,"opbeat-js-core":14,"zone.js":31}],35:[function(_dereq_,module,exports){
 var DEFER_LABEL = 'NG_DEFER_BOOTSTRAP!'
 var deferRegex = new RegExp('^' + DEFER_LABEL + '.*')
 
@@ -1680,7 +4943,7 @@ function patchAngularBootstrap (zoneService, beforeBootstrap) {
 
 module.exports = patchAngularBootstrap
 
-},{}],6:[function(_dereq_,module,exports){
+},{}],36:[function(_dereq_,module,exports){
 var opbeatCore = _dereq_('opbeat-js-core')
 var patchUtils = opbeatCore.patchUtils
 var utils = opbeatCore.utils
@@ -1709,7 +4972,7 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{"opbeat-js-core":29}],7:[function(_dereq_,module,exports){
+},{"opbeat-js-core":14}],37:[function(_dereq_,module,exports){
 var utils = _dereq_('opbeat-js-core').utils
 
 function getControllerInfoFromArgs (args) {
@@ -1759,7 +5022,7 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{"opbeat-js-core":29}],8:[function(_dereq_,module,exports){
+},{"opbeat-js-core":14}],38:[function(_dereq_,module,exports){
 var utils = _dereq_('opbeat-js-core').utils
 module.exports = function ($provide, transactionService) {
   'use strict'
@@ -1821,7 +5084,7 @@ function humanReadableWatchExpression (fn) {
   return fn.toString()
 }
 
-},{"opbeat-js-core":29}],9:[function(_dereq_,module,exports){
+},{"opbeat-js-core":14}],39:[function(_dereq_,module,exports){
 
 module.exports = function patchExceptionHandler ($provide) {
   $provide.decorator('$exceptionHandler', ['$delegate', '$opbeat', function $ExceptionHandlerDecorator ($delegate, $opbeat) {
@@ -1832,7 +5095,7 @@ module.exports = function patchExceptionHandler ($provide) {
   }])
 }
 
-},{}],10:[function(_dereq_,module,exports){
+},{}],40:[function(_dereq_,module,exports){
 module.exports = function ($provide, transactionService) {
   'use strict'
   function patchEventDirective (delegate, eventName) {
@@ -1863,7 +5126,7 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{}],11:[function(_dereq_,module,exports){
+},{}],41:[function(_dereq_,module,exports){
 module.exports = function ($provide, transactionService) {
   $provide.decorator('$rootScope', ['$delegate', '$injector', function ($delegate, $injector) {
     return decorateRootScope($delegate, transactionService)
@@ -1886,3208 +5149,4 @@ function decorateRootScope ($delegate, transactionService) {
   return $delegate
 }
 
-},{}],12:[function(_dereq_,module,exports){
-(function (define){
-(function(root, factory) {
-    'use strict';
-    // Universal Module Definition (UMD) to support AMD, CommonJS/Node.js, Rhino, and browsers.
-
-    /* istanbul ignore next */
-    if (typeof define === 'function' && define.amd) {
-        define('error-stack-parser', ['stackframe'], factory);
-    } else if (typeof exports === 'object') {
-        module.exports = factory(_dereq_('stackframe'));
-    } else {
-        root.ErrorStackParser = factory(root.StackFrame);
-    }
-}(this, function ErrorStackParser(StackFrame) {
-    'use strict';
-
-    var FIREFOX_SAFARI_STACK_REGEXP = /(^|@)\S+\:\d+/;
-    var CHROME_IE_STACK_REGEXP = /^\s*at .*(\S+\:\d+|\(native\))/m;
-    var SAFARI_NATIVE_CODE_REGEXP = /^(eval@)?(\[native code\])?$/;
-
-    function _map(array, fn, thisArg) {
-        if (typeof Array.prototype.map === 'function') {
-            return array.map(fn, thisArg);
-        } else {
-            var output = new Array(array.length);
-            for (var i = 0; i < array.length; i++) {
-                output[i] = fn.call(thisArg, array[i]);
-            }
-            return output;
-        }
-    }
-
-    function _filter(array, fn, thisArg) {
-        if (typeof Array.prototype.filter === 'function') {
-            return array.filter(fn, thisArg);
-        } else {
-            var output = [];
-            for (var i = 0; i < array.length; i++) {
-                if (fn.call(thisArg, array[i])) {
-                    output.push(array[i]);
-                }
-            }
-            return output;
-        }
-    }
-
-    function _indexOf(array, target) {
-        if (typeof Array.prototype.indexOf === 'function') {
-            return array.indexOf(target);
-        } else {
-            for (var i = 0; i < array.length; i++) {
-                if (array[i] === target) {
-                    return i;
-                }
-            }
-            return -1;
-        }
-    }
-
-    return {
-        /**
-         * Given an Error object, extract the most information from it.
-         *
-         * @param {Error} error object
-         * @return {Array} of StackFrames
-         */
-        parse: function ErrorStackParser$$parse(error) {
-            if (typeof error.stacktrace !== 'undefined' || typeof error['opera#sourceloc'] !== 'undefined') {
-                return this.parseOpera(error);
-            } else if (error.stack && error.stack.match(CHROME_IE_STACK_REGEXP)) {
-                return this.parseV8OrIE(error);
-            } else if (error.stack) {
-                return this.parseFFOrSafari(error);
-            } else {
-                throw new Error('Cannot parse given Error object');
-            }
-        },
-
-        // Separate line and column numbers from a string of the form: (URI:Line:Column)
-        extractLocation: function ErrorStackParser$$extractLocation(urlLike) {
-            // Fail-fast but return locations like "(native)"
-            if (urlLike.indexOf(':') === -1) {
-                return [urlLike];
-            }
-
-            var regExp = /(.+?)(?:\:(\d+))?(?:\:(\d+))?$/;
-            var parts = regExp.exec(urlLike.replace(/[\(\)]/g, ''));
-            return [parts[1], parts[2] || undefined, parts[3] || undefined];
-        },
-
-        parseV8OrIE: function ErrorStackParser$$parseV8OrIE(error) {
-            var filtered = _filter(error.stack.split('\n'), function(line) {
-                return !!line.match(CHROME_IE_STACK_REGEXP);
-            }, this);
-
-            return _map(filtered, function(line) {
-                if (line.indexOf('(eval ') > -1) {
-                    // Throw away eval information until we implement stacktrace.js/stackframe#8
-                    line = line.replace(/eval code/g, 'eval').replace(/(\(eval at [^\()]*)|(\)\,.*$)/g, '');
-                }
-                var tokens = line.replace(/^\s+/, '').replace(/\(eval code/g, '(').split(/\s+/).slice(1);
-                var locationParts = this.extractLocation(tokens.pop());
-                var functionName = tokens.join(' ') || undefined;
-                var fileName = _indexOf(['eval', '<anonymous>'], locationParts[0]) > -1 ? undefined : locationParts[0];
-
-                return new StackFrame(functionName, undefined, fileName, locationParts[1], locationParts[2], line);
-            }, this);
-        },
-
-        parseFFOrSafari: function ErrorStackParser$$parseFFOrSafari(error) {
-            var filtered = _filter(error.stack.split('\n'), function(line) {
-                return !line.match(SAFARI_NATIVE_CODE_REGEXP);
-            }, this);
-
-            return _map(filtered, function(line) {
-                // Throw away eval information until we implement stacktrace.js/stackframe#8
-                if (line.indexOf(' > eval') > -1) {
-                    line = line.replace(/ line (\d+)(?: > eval line \d+)* > eval\:\d+\:\d+/g, ':$1');
-                }
-
-                if (line.indexOf('@') === -1 && line.indexOf(':') === -1) {
-                    // Safari eval frames only have function names and nothing else
-                    return new StackFrame(line);
-                } else {
-                    var tokens = line.split('@');
-                    var locationParts = this.extractLocation(tokens.pop());
-                    var functionName = tokens.join('@') || undefined;
-                    return new StackFrame(functionName,
-                        undefined,
-                        locationParts[0],
-                        locationParts[1],
-                        locationParts[2],
-                        line);
-                }
-            }, this);
-        },
-
-        parseOpera: function ErrorStackParser$$parseOpera(e) {
-            if (!e.stacktrace || (e.message.indexOf('\n') > -1 &&
-                e.message.split('\n').length > e.stacktrace.split('\n').length)) {
-                return this.parseOpera9(e);
-            } else if (!e.stack) {
-                return this.parseOpera10(e);
-            } else {
-                return this.parseOpera11(e);
-            }
-        },
-
-        parseOpera9: function ErrorStackParser$$parseOpera9(e) {
-            var lineRE = /Line (\d+).*script (?:in )?(\S+)/i;
-            var lines = e.message.split('\n');
-            var result = [];
-
-            for (var i = 2, len = lines.length; i < len; i += 2) {
-                var match = lineRE.exec(lines[i]);
-                if (match) {
-                    result.push(new StackFrame(undefined, undefined, match[2], match[1], undefined, lines[i]));
-                }
-            }
-
-            return result;
-        },
-
-        parseOpera10: function ErrorStackParser$$parseOpera10(e) {
-            var lineRE = /Line (\d+).*script (?:in )?(\S+)(?:: In function (\S+))?$/i;
-            var lines = e.stacktrace.split('\n');
-            var result = [];
-
-            for (var i = 0, len = lines.length; i < len; i += 2) {
-                var match = lineRE.exec(lines[i]);
-                if (match) {
-                    result.push(
-                        new StackFrame(
-                            match[3] || undefined,
-                            undefined,
-                            match[2],
-                            match[1],
-                            undefined,
-                            lines[i]
-                        )
-                    );
-                }
-            }
-
-            return result;
-        },
-
-        // Opera 10.65+ Error.stack very similar to FF/Safari
-        parseOpera11: function ErrorStackParser$$parseOpera11(error) {
-            var filtered = _filter(error.stack.split('\n'), function(line) {
-                return !!line.match(FIREFOX_SAFARI_STACK_REGEXP) && !line.match(/^Error created at/);
-            }, this);
-
-            return _map(filtered, function(line) {
-                var tokens = line.split('@');
-                var locationParts = this.extractLocation(tokens.pop());
-                var functionCall = (tokens.shift() || '');
-                var functionName = functionCall
-                        .replace(/<anonymous function(: (\w+))?>/, '$2')
-                        .replace(/\([^\)]*\)/g, '') || undefined;
-                var argsRaw;
-                if (functionCall.match(/\(([^\)]*)\)/)) {
-                    argsRaw = functionCall.replace(/^[^\(]+\(([^\)]*)\)$/, '$1');
-                }
-                var args = (argsRaw === undefined || argsRaw === '[arguments not available]') ?
-                    undefined : argsRaw.split(',');
-                return new StackFrame(
-                    functionName,
-                    args,
-                    locationParts[0],
-                    locationParts[1],
-                    locationParts[2],
-                    line);
-            }, this);
-        }
-    };
-}));
-
-
-}).call(this,undefined)
-},{"stackframe":17}],13:[function(_dereq_,module,exports){
-(function (define){
-/*
-* loglevel - https://github.com/pimterry/loglevel
-*
-* Copyright (c) 2013 Tim Perry
-* Licensed under the MIT license.
-*/
-(function (root, definition) {
-    "use strict";
-    if (typeof define === 'function' && define.amd) {
-        define(definition);
-    } else if (typeof module === 'object' && module.exports) {
-        module.exports = definition();
-    } else {
-        root.log = definition();
-    }
-}(this, function () {
-    "use strict";
-    var noop = function() {};
-    var undefinedType = "undefined";
-
-    function realMethod(methodName) {
-        if (typeof console === undefinedType) {
-            return false; // We can't build a real method without a console to log to
-        } else if (console[methodName] !== undefined) {
-            return bindMethod(console, methodName);
-        } else if (console.log !== undefined) {
-            return bindMethod(console, 'log');
-        } else {
-            return noop;
-        }
-    }
-
-    function bindMethod(obj, methodName) {
-        var method = obj[methodName];
-        if (typeof method.bind === 'function') {
-            return method.bind(obj);
-        } else {
-            try {
-                return Function.prototype.bind.call(method, obj);
-            } catch (e) {
-                // Missing bind shim or IE8 + Modernizr, fallback to wrapping
-                return function() {
-                    return Function.prototype.apply.apply(method, [obj, arguments]);
-                };
-            }
-        }
-    }
-
-    // these private functions always need `this` to be set properly
-
-    function enableLoggingWhenConsoleArrives(methodName, level, loggerName) {
-        return function () {
-            if (typeof console !== undefinedType) {
-                replaceLoggingMethods.call(this, level, loggerName);
-                this[methodName].apply(this, arguments);
-            }
-        };
-    }
-
-    function replaceLoggingMethods(level, loggerName) {
-        /*jshint validthis:true */
-        for (var i = 0; i < logMethods.length; i++) {
-            var methodName = logMethods[i];
-            this[methodName] = (i < level) ?
-                noop :
-                this.methodFactory(methodName, level, loggerName);
-        }
-    }
-
-    function defaultMethodFactory(methodName, level, loggerName) {
-        /*jshint validthis:true */
-        return realMethod(methodName) ||
-               enableLoggingWhenConsoleArrives.apply(this, arguments);
-    }
-
-    var logMethods = [
-        "trace",
-        "debug",
-        "info",
-        "warn",
-        "error"
-    ];
-
-    function Logger(name, defaultLevel, factory) {
-      var self = this;
-      var currentLevel;
-      var storageKey = "loglevel";
-      if (name) {
-        storageKey += ":" + name;
-      }
-
-      function persistLevelIfPossible(levelNum) {
-          var levelName = (logMethods[levelNum] || 'silent').toUpperCase();
-
-          // Use localStorage if available
-          try {
-              window.localStorage[storageKey] = levelName;
-              return;
-          } catch (ignore) {}
-
-          // Use session cookie as fallback
-          try {
-              window.document.cookie =
-                encodeURIComponent(storageKey) + "=" + levelName + ";";
-          } catch (ignore) {}
-      }
-
-      function getPersistedLevel() {
-          var storedLevel;
-
-          try {
-              storedLevel = window.localStorage[storageKey];
-          } catch (ignore) {}
-
-          if (typeof storedLevel === undefinedType) {
-              try {
-                  var cookie = window.document.cookie;
-                  var location = cookie.indexOf(
-                      encodeURIComponent(storageKey) + "=");
-                  if (location) {
-                      storedLevel = /^([^;]+)/.exec(cookie.slice(location))[1];
-                  }
-              } catch (ignore) {}
-          }
-
-          // If the stored level is not valid, treat it as if nothing was stored.
-          if (self.levels[storedLevel] === undefined) {
-              storedLevel = undefined;
-          }
-
-          return storedLevel;
-      }
-
-      /*
-       *
-       * Public API
-       *
-       */
-
-      self.levels = { "TRACE": 0, "DEBUG": 1, "INFO": 2, "WARN": 3,
-          "ERROR": 4, "SILENT": 5};
-
-      self.methodFactory = factory || defaultMethodFactory;
-
-      self.getLevel = function () {
-          return currentLevel;
-      };
-
-      self.setLevel = function (level, persist) {
-          if (typeof level === "string" && self.levels[level.toUpperCase()] !== undefined) {
-              level = self.levels[level.toUpperCase()];
-          }
-          if (typeof level === "number" && level >= 0 && level <= self.levels.SILENT) {
-              currentLevel = level;
-              if (persist !== false) {  // defaults to true
-                  persistLevelIfPossible(level);
-              }
-              replaceLoggingMethods.call(self, level, name);
-              if (typeof console === undefinedType && level < self.levels.SILENT) {
-                  return "No console available for logging";
-              }
-          } else {
-              throw "log.setLevel() called with invalid level: " + level;
-          }
-      };
-
-      self.setDefaultLevel = function (level) {
-          if (!getPersistedLevel()) {
-              self.setLevel(level, false);
-          }
-      };
-
-      self.enableAll = function(persist) {
-          self.setLevel(self.levels.TRACE, persist);
-      };
-
-      self.disableAll = function(persist) {
-          self.setLevel(self.levels.SILENT, persist);
-      };
-
-      // Initialize with the right level
-      var initialLevel = getPersistedLevel();
-      if (initialLevel == null) {
-          initialLevel = defaultLevel == null ? "WARN" : defaultLevel;
-      }
-      self.setLevel(initialLevel, false);
-    }
-
-    /*
-     *
-     * Package-level API
-     *
-     */
-
-    var defaultLogger = new Logger();
-
-    var _loggersByName = {};
-    defaultLogger.getLogger = function getLogger(name) {
-        if (typeof name !== "string" || name === "") {
-          throw new TypeError("You must supply a name when creating a logger.");
-        }
-
-        var logger = _loggersByName[name];
-        if (!logger) {
-          logger = _loggersByName[name] = new Logger(
-            name, defaultLogger.getLevel(), defaultLogger.methodFactory);
-        }
-        return logger;
-    };
-
-    // Grab the current global log variable in case of overwrite
-    var _log = (typeof window !== undefinedType) ? window.log : undefined;
-    defaultLogger.noConflict = function() {
-        if (typeof window !== undefinedType &&
-               window.log === defaultLogger) {
-            window.log = _log;
-        }
-
-        return defaultLogger;
-    };
-
-    return defaultLogger;
-}));
-
-}).call(this,undefined)
-},{}],14:[function(_dereq_,module,exports){
-module.exports = _dereq_('./lib/simple_lru.js');
-
-},{"./lib/simple_lru.js":15}],15:[function(_dereq_,module,exports){
-"use strict";
-
-/**
- * LRU cache based on a double linked list
- */
-
-function ListElement(before,next,key,value){
-    this.before = before
-    this.next = next
-    this.key = key
-    this.value = value
-}
-
-ListElement.prototype.setKey = function(key){
-    this.key = key
-}
-
-ListElement.prototype.setValue = function(value){
-    this.value = value
-}
-
-
-function Cache(options){
-    if(!options)
-        options = {}
-    this.maxSize = options.maxSize 
-    this.reset()
-}
-
-
-Cache.prototype.reset = function(){
-    this.size = 0   
-    this.cache = {}
-    this.tail = undefined
-    this.head = undefined
-}
-
-
-Cache.prototype.get = function(key,hit){
-    var cacheVal = this.cache[key]
-    /*
-     * Define if the egt function should hit the value to move
-     * it to the head of linked list  
-     */
-    hit = hit != undefined && hit != null ? hit : true;
-    if(cacheVal && hit)
-        this.hit(cacheVal)
-    else
-        return undefined
-    return cacheVal.value
-}
-
-Cache.prototype.set = function(key,val,hit){
-    var actual = this.cache[key]
-    /*
-     * Define if the set function should hit the value to move
-     * it to the head of linked list  
-     */
-     hit = hit != undefined && hit != null ? hit : true;
-    
-    
-    if(actual){
-        actual.value = val
-        if(hit) this.hit(actual)
-    }else{
-        var cacheVal
-        if(this.size >= this.maxSize){
-            var tailKey = this.tail.key 
-            this.detach(this.tail)
-            
-            /*
-             * If max is reached we'llreuse object to minimize GC impact 
-             * when the objects are cached short time
-             */
-            cacheVal = this.cache[tailKey]
-            delete this.cache[tailKey]
-
-            cacheVal.next = undefined
-            cacheVal.before = undefined
-            
-            /*
-             * setters reuse the array object 
-             */
-            cacheVal.setKey(key)
-            cacheVal.setValue(val)
-        }
-
-        cacheVal = cacheVal ? cacheVal : new ListElement(undefined,undefined,key,val)
-        this.cache[key] = cacheVal
-        this.attach(cacheVal)
-    }
-}
-
-Cache.prototype.del = function(key){
-    var val = this.cache[key]
-    if(!val)
-        return;
-    this.detach(val)
-    delete this.cache[key]
-}
-
-Cache.prototype.hit = function(cacheVal){
-    //Send cacheVal to the head of list
-    this.detach(cacheVal)
-    this.attach(cacheVal)
-}
-
-Cache.prototype.attach = function(element){
-    if(!element)
-        return;
-    element.before = undefined
-    element.next = this.head
-    this.head = element
-    if(!element.next)
-       this.tail = element
-    else
-        element.next.before = element
-    this.size++ 
-}
-
-Cache.prototype.detach = function(element){
-    if(!element)
-        return;
-    var before = element.before
-    var next = element.next
-    if(before){
-        before.next = next
-    }else{
-        this.head = next
-    }
-    if(next){
-        next.before = before
-    }else{
-        this.tail = before
-    }
-    this.size--
-}
-
-Cache.prototype.forEach = function(callback){
-    var self = this
-    Object.keys(this.cache).forEach(function(key){
-        var val = self.cache[key]
-        callback(val.value,key)
-    })
-}
-module.exports=Cache
-
-},{}],16:[function(_dereq_,module,exports){
-(function (define){
-(function (root, factory) {
-    'use strict';
-    // Universal Module Definition (UMD) to support AMD, CommonJS/Node.js, Rhino, and browsers.
-
-    /* istanbul ignore next */
-    if (typeof define === 'function' && define.amd) {
-        define('stack-generator', ['stackframe'], factory);
-    } else if (typeof exports === 'object') {
-        module.exports = factory(_dereq_('stackframe'));
-    } else {
-        root.StackGenerator = factory(root.StackFrame);
-    }
-}(this, function (StackFrame) {
-    return {
-        backtrace: function StackGenerator$$backtrace(opts) {
-            var stack = [];
-            var maxStackSize = 10;
-
-            if (typeof opts === 'object' && typeof opts.maxStackSize === 'number') {
-                maxStackSize = opts.maxStackSize;
-            }
-
-            var curr = arguments.callee;
-            while (curr && stack.length < maxStackSize) {
-                // Allow V8 optimizations
-                var args = new Array(curr['arguments'].length);
-                for(var i = 0; i < args.length; ++i) {
-                    args[i] = curr['arguments'][i];
-                }
-                if (/function(?:\s+([\w$]+))+\s*\(/.test(curr.toString())) {
-                    stack.push(new StackFrame(RegExp.$1 || undefined, args));
-                } else {
-                    stack.push(new StackFrame(undefined, args));
-                }
-
-                try {
-                    curr = curr.caller;
-                } catch (e) {
-                    break;
-                }
-            }
-            return stack;
-        }
-    };
-}));
-
-}).call(this,undefined)
-},{"stackframe":17}],17:[function(_dereq_,module,exports){
-(function (define){
-(function (root, factory) {
-    'use strict';
-    // Universal Module Definition (UMD) to support AMD, CommonJS/Node.js, Rhino, and browsers.
-
-    /* istanbul ignore next */
-    if (typeof define === 'function' && define.amd) {
-        define('stackframe', [], factory);
-    } else if (typeof exports === 'object') {
-        module.exports = factory();
-    } else {
-        root.StackFrame = factory();
-    }
-}(this, function () {
-    'use strict';
-    function _isNumber(n) {
-        return !isNaN(parseFloat(n)) && isFinite(n);
-    }
-
-    function StackFrame(functionName, args, fileName, lineNumber, columnNumber, source) {
-        if (functionName !== undefined) {
-            this.setFunctionName(functionName);
-        }
-        if (args !== undefined) {
-            this.setArgs(args);
-        }
-        if (fileName !== undefined) {
-            this.setFileName(fileName);
-        }
-        if (lineNumber !== undefined) {
-            this.setLineNumber(lineNumber);
-        }
-        if (columnNumber !== undefined) {
-            this.setColumnNumber(columnNumber);
-        }
-        if (source !== undefined) {
-            this.setSource(source);
-        }
-    }
-
-    StackFrame.prototype = {
-        getFunctionName: function () {
-            return this.functionName;
-        },
-        setFunctionName: function (v) {
-            this.functionName = String(v);
-        },
-
-        getArgs: function () {
-            return this.args;
-        },
-        setArgs: function (v) {
-            if (Object.prototype.toString.call(v) !== '[object Array]') {
-                throw new TypeError('Args must be an Array');
-            }
-            this.args = v;
-        },
-
-        // NOTE: Property name may be misleading as it includes the path,
-        // but it somewhat mirrors V8's JavaScriptStackTraceApi
-        // https://code.google.com/p/v8/wiki/JavaScriptStackTraceApi and Gecko's
-        // http://mxr.mozilla.org/mozilla-central/source/xpcom/base/nsIException.idl#14
-        getFileName: function () {
-            return this.fileName;
-        },
-        setFileName: function (v) {
-            this.fileName = String(v);
-        },
-
-        getLineNumber: function () {
-            return this.lineNumber;
-        },
-        setLineNumber: function (v) {
-            if (!_isNumber(v)) {
-                throw new TypeError('Line Number must be a Number');
-            }
-            this.lineNumber = Number(v);
-        },
-
-        getColumnNumber: function () {
-            return this.columnNumber;
-        },
-        setColumnNumber: function (v) {
-            if (!_isNumber(v)) {
-                throw new TypeError('Column Number must be a Number');
-            }
-            this.columnNumber = Number(v);
-        },
-
-        getSource: function () {
-            return this.source;
-        },
-        setSource: function (v) {
-            this.source = String(v);
-        },
-
-        toString: function() {
-            var functionName = this.getFunctionName() || '{anonymous}';
-            var args = '(' + (this.getArgs() || []).join(',') + ')';
-            var fileName = this.getFileName() ? ('@' + this.getFileName()) : '';
-            var lineNumber = _isNumber(this.getLineNumber()) ? (':' + this.getLineNumber()) : '';
-            var columnNumber = _isNumber(this.getColumnNumber()) ? (':' + this.getColumnNumber()) : '';
-            return functionName + args + fileName + lineNumber + columnNumber;
-        }
-    };
-
-    return StackFrame;
-}));
-
-}).call(this,undefined)
-},{}],18:[function(_dereq_,module,exports){
-module.exports = {
-  createValidFrames: function createValidFrames (frames) {
-    var result = []
-    if (Array.isArray(frames)) {
-      result = frames.filter(function (f) {
-        return (typeof f['filename'] !== 'undefined' && typeof f['lineno'] !== 'undefined')
-      })
-    }
-    return result
-  }
-}
-
-},{}],19:[function(_dereq_,module,exports){
-var backendUtils = _dereq_('./backend_utils')
-var utils = _dereq_('../lib/utils')
-module.exports = OpbeatBackend
-function OpbeatBackend (transport, logger, config) {
-  this._logger = logger
-  this._transport = transport
-  this._config = config
-}
-OpbeatBackend.prototype.sendError = function (errorData) {
-  if (this._config.isValid()) {
-    errorData.stacktrace.frames = backendUtils.createValidFrames(errorData.stacktrace.frames)
-    var headers = this.getHeaders()
-    this._transport.sendError(errorData, headers)
-  } else {
-    this._logger.debug('Config is not valid')
-  }
-}
-
-OpbeatBackend.prototype.getHeaders = function () {
-  var platform = this._config.get('platform')
-  var headers = {
-    'X-Opbeat-Client': this._config.getAgentName()
-  }
-  if (platform) {
-    var pl = []
-    if (platform.platform) pl.push('platform=' + platform.platform)
-    if (platform.framework) pl.push('framework=' + platform.framework)
-    if (pl.length > 0) headers['X-Opbeat-Platform'] = pl.join(' ')
-  }
-  return headers
-}
-
-OpbeatBackend.prototype.groupSmallContinuouslySimilarTraces = function (transaction, threshold) {
-  var transDuration = transaction.duration()
-  var traces = []
-  var lastCount = 1
-  transaction.traces
-    .forEach(function (trace, index) {
-      if (traces.length === 0) {
-        traces.push(trace)
-      } else {
-        var lastTrace = traces[traces.length - 1]
-
-        var isContinuouslySimilar = lastTrace.type === trace.type &&
-          lastTrace.signature === trace.signature &&
-          trace.duration() / transDuration < threshold &&
-          (trace._start - lastTrace._end) / transDuration < threshold
-
-        var isLastTrace = transaction.traces.length === index + 1
-
-        if (isContinuouslySimilar) {
-          lastCount++
-          lastTrace._end = trace._end
-          lastTrace.calcDiff()
-        }
-
-        if (lastCount > 1 && (!isContinuouslySimilar || isLastTrace)) {
-          lastTrace.signature = lastCount + 'x ' + lastTrace.signature
-          lastCount = 1
-        }
-
-        if (!isContinuouslySimilar) {
-          traces.push(trace)
-        }
-      }
-    })
-  return traces
-}
-
-OpbeatBackend.prototype.checkBrowserResponsiveness = function (transaction, interval, buffer) {
-  var counter = transaction.browserResponsivenessCounter
-  if (typeof interval === 'undefined' || typeof counter === 'undefined') {
-    return true
-  }
-
-  var duration = transaction._rootTrace.duration()
-  var expectedCount = Math.floor(duration / interval)
-  var wasBrowserResponsive = counter + buffer >= expectedCount
-
-  return wasBrowserResponsive
-}
-
-OpbeatBackend.prototype.sendTransactions = function (transactionList) {
-  var opbeatBackend = this
-  if (this._config.isValid()) {
-    var browserResponsivenessInterval = opbeatBackend._config.get('performance.browserResponsivenessInterval')
-    var checkBrowserResponsiveness = opbeatBackend._config.get('performance.checkBrowserResponsiveness')
-
-    transactionList.forEach(function (transaction) {
-      transaction.traces.sort(function (traceA, traceB) {
-        return traceA._start - traceB._start
-      })
-
-      if (opbeatBackend._config.get('performance.groupSimilarTraces')) {
-        var similarTraceThreshold = opbeatBackend._config.get('performance.similarTraceThreshold')
-        transaction.traces = opbeatBackend.groupSmallContinuouslySimilarTraces(transaction, similarTraceThreshold)
-      }
-      var context = opbeatBackend._config.get('context')
-      if (context) {
-        transaction.contextInfo = utils.merge(transaction.contextInfo || {}, context)
-      }
-
-      var ctx = transaction.contextInfo
-      if (ctx.browser && ctx.browser.location) {
-        ctx.browser.location = ctx.browser.location.substring(0, 511)
-        var protocol = ctx.browser.location.split('://')[0]
-        var acceptedProtocols = ['http', 'https', 'file']
-        if (acceptedProtocols.indexOf(protocol) < 0) {
-          delete ctx.browser.location
-        }
-      }
-      if (checkBrowserResponsiveness) {
-        if (!ctx.debug) {
-          ctx.debug = {}
-        }
-        ctx.debug.browserResponsivenessCounter = transaction.browserResponsivenessCounter
-        ctx.debug.browserResponsivenessInterval = browserResponsivenessInterval
-      }
-    })
-
-    var filterTransactions = transactionList.filter(function (tr) {
-      if (checkBrowserResponsiveness) {
-        var buffer = opbeatBackend._config.get('performance.browserResponsivenessBuffer')
-
-        var duration = tr._rootTrace.duration()
-        var wasBrowserResponsive = opbeatBackend.checkBrowserResponsiveness(tr, browserResponsivenessInterval, buffer)
-        if (!wasBrowserResponsive) {
-          opbeatBackend._logger.debug('Transaction was discarded! browser was not responsive enough during the transaction.', ' duration:', duration, ' browserResponsivenessCounter:', tr.browserResponsivenessCounter, 'interval:', browserResponsivenessInterval)
-          return false
-        }
-      }
-      return true
-    })
-
-    if (filterTransactions.length > 0) {
-      var formatedTransactions = this._formatTransactions(filterTransactions)
-      var headers = this.getHeaders()
-      return this._transport.sendTransaction(formatedTransactions, headers)
-    }
-  } else {
-    this._logger.debug('Config is not valid')
-  }
-}
-
-OpbeatBackend.prototype._formatTransactions = function (transactionList) {
-  var transactions = this.groupTransactions(transactionList)
-
-  var traces = [].concat.apply([], transactionList.map(function (trans) {
-    return trans.traces
-  }))
-
-  var groupedTraces = groupTraces(traces)
-  var groupedTracesTimings = this.getRawGroupedTracesTimings(traces, groupedTraces)
-
-  groupedTraces.forEach(function (g) {
-    delete g._group
-    if (typeof g.signature === 'string') {
-      g.signature = g.signature.substring(0, 511)
-    }
-  })
-
-  return {
-    transactions: transactions,
-    traces: {
-      groups: groupedTraces,
-      raw: groupedTracesTimings
-    }
-  }
-}
-
-OpbeatBackend.prototype.groupTransactions = function groupTransactions (transactions) {
-  var groups = grouper(transactions, transactionGroupingKey)
-  return Object.keys(groups).map(function (key) {
-    var trans = groups[key][0]
-    var durations = groups[key].map(function (trans) {
-      return trans.duration()
-    })
-    return {
-      transaction: trans.name,
-      result: trans.result,
-      kind: trans.type,
-      timestamp: groupingTs(trans._startStamp).toISOString(),
-      durations: durations
-    }
-  })
-}
-
-OpbeatBackend.prototype.getRawGroupedTracesTimings = function getRawGroupedTracesTimings (traces, groupedTraces) {
-  var getTraceGroupIndex = function (col, item) {
-    var index = 0
-    var targetGroup = traceGroupingKey(item)
-
-    col.forEach(function (item, i) {
-      if (item._group === targetGroup) {
-        index = i
-      }
-    })
-
-    return index
-  }
-  var self = this
-  var groupedByTransaction = grouper(traces, function (trace) {
-    return trace.transaction.name + '|' + trace.transaction._start
-  })
-
-  return Object.keys(groupedByTransaction).map(function (key) {
-    var traces = groupedByTransaction[key]
-    var transaction = traces[0].transaction
-
-    var data = [transaction.duration()]
-
-    traces.forEach(function (trace) {
-      var groupIndex = getTraceGroupIndex(groupedTraces, trace)
-      var relativeTraceStart = trace._start - transaction._start
-
-      if (relativeTraceStart > transaction.duration()) {
-        self._logger.debug('%c -- opbeat.instrumentation.getRawGroupedTracesTimings.error.relativeTraceStartLargerThanTransactionDuration', 'color: #ff0000', relativeTraceStart, transaction._start, transaction.duration(), { trace: trace, transaction: transaction })
-      } else if (relativeTraceStart < 0) {
-        self._logger.debug('%c -- opbeat.instrumentation.getRawGroupedTracesTimings.error.negativeRelativeTraceStart!', 'color: #ff0000', relativeTraceStart, trace._start, transaction._start, trace)
-      } else if (trace.duration() > transaction.duration()) {
-        self._logger.debug('%c -- opbeat.instrumentation.getRawGroupedTracesTimings.error.traceDurationLargerThanTranscationDuration', 'color: #ff0000', trace.duration(), transaction.duration(), { trace: trace, transaction: transaction })
-      } else {
-        data.push([groupIndex, relativeTraceStart, trace.duration()])
-      }
-    })
-
-    if (transaction.contextInfo && Object.keys(transaction.contextInfo).length > 0) {
-      data.push(transaction.contextInfo)
-    }
-    return data
-  })
-}
-
-function groupTraces (traces) {
-  var groupedByMinute = grouper(traces, traceGroupingKey)
-
-  return Object.keys(groupedByMinute).map(function (key) {
-    var trace = groupedByMinute[key][0]
-
-    var startTime = trace._start
-    if (trace.transaction) {
-      startTime = startTime - trace.transaction._start
-    } else {
-      startTime = 0
-    }
-
-    var extra = {}
-    var frames = backendUtils.createValidFrames(trace.frames)
-    if (frames.length > 0) {
-      extra._frames = frames
-    }
-
-    return {
-      transaction: trace.transaction.name,
-      signature: trace.signature,
-      kind: trace.type,
-      timestamp: trace.transaction._startStamp.toISOString(),
-      parents: trace.ancestors(),
-      extra: extra,
-      _group: key
-    }
-  }).sort(function (a, b) {
-    return a.start_time - b.start_time
-  })
-}
-
-function grouper (arr, func) {
-  var groups = {}
-
-  arr.forEach(function (obj) {
-    var key = func(obj)
-    if (key in groups) {
-      groups[key].push(obj)
-    } else {
-      groups[key] = [obj]
-    }
-
-    obj._traceGroup = key
-  })
-
-  return groups
-}
-
-function groupingTs (ts) {
-  return new Date(ts.getFullYear(), ts.getMonth(), ts.getDate(), ts.getHours(), ts.getMinutes())
-}
-
-function transactionGroupingKey (trans) {
-  return [
-    groupingTs(trans._startStamp).getTime(),
-    trans.name,
-    trans.result,
-    trans.type
-  ].join('-')
-}
-
-function traceGroupingKey (trace) {
-  var ancestors = trace.ancestors().map(function (trace) {
-    return trace.signature
-  }).join(',')
-
-  return [
-    groupingTs(trace.transaction._startStamp).getTime(),
-    trace.transaction.name,
-    ancestors,
-    trace.signature,
-    trace.type
-  ].join('-')
-}
-
-},{"../lib/utils":34,"./backend_utils":18}],20:[function(_dereq_,module,exports){
-var patchXMLHttpRequest = _dereq_('./patches/xhrPatch')
-
-function patchCommon (serviceContainer) {
-  patchXMLHttpRequest(serviceContainer)
-}
-
-module.exports = patchCommon
-
-},{"./patches/xhrPatch":22}],21:[function(_dereq_,module,exports){
-module.exports = {
-  patchFunction: function patchModule (delegate, options) {},
-  _copyProperties: function _copyProperties (source, target) {
-    for (var key in source) {
-      if (source.hasOwnProperty(key)) {
-        target[key] = source[key]
-      }
-    }
-  },
-  wrapAfter: function wrapAfter (fn, wrapWith) {
-    return function () {
-      var res = fn.apply(this, arguments)
-      wrapWith.apply(this, arguments)
-      return res
-    }
-  },
-  wrapBefore: function wrapBefore (fn, wrapWith) {
-    return function () {
-      wrapWith.apply(this, arguments)
-      return fn.apply(this, arguments)
-    }
-  },
-  wrap: function (fn, before, after) {
-    return function () {
-      before.apply(this, arguments)
-      var res = fn.apply(this, arguments)
-      after.apply(this, arguments)
-      return res
-    }
-  },
-  argumentsToArray: function argumentsToArray (args) {
-    var newArgs = []
-    for (var i = 0; i < args.length; i++) {
-      newArgs[i] = args[i]
-    }
-    return newArgs
-  },
-  opbeatSymbol: opbeatSymbol,
-  patchMethod: patchMethod
-}
-
-function opbeatSymbol (name) {
-  return '__opbeat_symbol__' + name
-}
-
-function patchMethod (target, name, patchFn) {
-  var proto = target
-  while (proto && !proto.hasOwnProperty(name)) {
-    proto = Object.getPrototypeOf(proto)
-  }
-  if (!proto && target[name]) {
-    // somehow we did not find it, but we can see it. This happens on IE for Window properties.
-    proto = target
-  }
-  var delegateName = opbeatSymbol(name)
-  var delegate
-  if (proto && !(delegate = proto[delegateName])) {
-    delegate = proto[delegateName] = proto[name]
-    proto[name] = createNamedFn(name, patchFn(delegate, delegateName, name))
-  }
-  return delegate
-}
-
-function createNamedFn (name, delegate) {
-  try {
-    return (Function('f', 'return function ' + name + '(){return f(this, arguments)}'))(delegate) // eslint-disable-line
-  } catch (e) {
-    // if we fail, we must be CSP, just return delegate.
-    return function () {
-      return delegate(this, arguments)
-    }
-  }
-}
-
-},{}],22:[function(_dereq_,module,exports){
-var patchUtils = _dereq_('../patchUtils')
-
-var urlSympbol = patchUtils.opbeatSymbol('url')
-var methodSymbol = patchUtils.opbeatSymbol('method')
-var isAsyncSymbol = patchUtils.opbeatSymbol('isAsync')
-
-module.exports = function patchXMLHttpRequest () {
-  patchUtils.patchMethod(window.XMLHttpRequest.prototype, 'open', function (delegate) {
-    return function (self, args) {
-      self[methodSymbol] = args[0]
-      self[urlSympbol] = args[1]
-      self[isAsyncSymbol] = args[2]
-      delegate.apply(self, args)
-    }
-  })
-}
-
-},{"../patchUtils":21}],23:[function(_dereq_,module,exports){
-var OpbeatBackend = _dereq_('../backend/opbeat_backend')
-var Logger = _dereq_('loglevel')
-var Config = _dereq_('../lib/config')
-
-var utils = _dereq_('../lib/utils')
-var transport = _dereq_('../lib/transport')
-var ExceptionHandler = _dereq_('../exceptions/exceptionHandler')
-var PerformanceServiceContainer = _dereq_('../performance/serviceContainer')
-
-function ServiceFactory () {
-  this.services = {}
-}
-
-ServiceFactory.prototype.getOpbeatBackend = function () {
-  if (utils.isUndefined(this.services['OpbeatBackend'])) {
-    var logger = this.getLogger()
-    var configService = this.getConfigService()
-    var _transport = this.getTransport()
-    this.services['OpbeatBackend'] = new OpbeatBackend(_transport, logger, configService)
-  }
-  return this.services['OpbeatBackend']
-}
-
-ServiceFactory.prototype.getTransport = function () {
-  if (utils.isUndefined(this.services['Transport'])) {
-    this.services['Transport'] = transport
-  }
-  return this.services['Transport']
-}
-
-ServiceFactory.prototype.setLogLevel = function (logger, configService) {
-  if (configService.get('debug') === true && configService.config.logLevel !== 'trace') {
-    logger.setLevel('debug', false)
-  } else {
-    logger.setLevel(configService.get('logLevel'), false)
-  }
-}
-
-ServiceFactory.prototype.getLogger = function () {
-  if (utils.isUndefined(this.services['Logger'])) {
-    var configService = this.getConfigService()
-    var serviceFactory = this
-    serviceFactory.setLogLevel(Logger, configService)
-    configService.subscribeToChange(function (newConfig) {
-      serviceFactory.setLogLevel(Logger, configService)
-    })
-    this.services['Logger'] = Logger
-  }
-  return this.services['Logger']
-}
-
-ServiceFactory.prototype.getConfigService = function () {
-  if (utils.isUndefined(this.services['ConfigService'])) {
-    Config.init()
-    this.services['ConfigService'] = Config
-  }
-  return this.services['ConfigService']
-}
-
-ServiceFactory.prototype.getExceptionHandler = function () {
-  if (utils.isUndefined(this.services['ExceptionHandler'])) {
-    var logger = this.getLogger()
-    var configService = this.getConfigService()
-    var exceptionHandler = new ExceptionHandler(this.getOpbeatBackend(), configService, logger)
-    this.services['ExceptionHandler'] = exceptionHandler
-  }
-  return this.services['ExceptionHandler']
-}
-
-ServiceFactory.prototype.getPerformanceServiceContainer = function () {
-  if (utils.isUndefined(this.services['PerformanceServiceContainer'])) {
-    this.services['PerformanceServiceContainer'] = new PerformanceServiceContainer(this)
-  }
-  return this.services['PerformanceServiceContainer']
-}
-
-module.exports = ServiceFactory
-
-},{"../backend/opbeat_backend":19,"../exceptions/exceptionHandler":26,"../lib/config":30,"../lib/transport":33,"../lib/utils":34,"../performance/serviceContainer":35,"loglevel":13}],24:[function(_dereq_,module,exports){
-function Subscription () {
-  this.subscriptions = []
-}
-
-Subscription.prototype.subscribe = function (fn) {
-  var self = this
-  this.subscriptions.push(fn)
-
-  return function () {
-    var index = self.subscriptions.indexOf(fn)
-    if (index > -1) {
-      self.subscriptions.splice(index, 1)
-    }
-  }
-}
-
-Subscription.prototype.applyAll = function (applyTo, applyWith) {
-  this.subscriptions.forEach(function (fn) {
-    try {
-      fn.apply(applyTo, applyWith)
-    } catch (error) {
-      console.log(error, error.stack)
-    }
-  }, this)
-}
-
-module.exports = Subscription
-
-},{}],25:[function(_dereq_,module,exports){
-var utils = _dereq_('../lib/utils')
-var fileFetcher = _dereq_('../lib/fileFetcher')
-
-module.exports = {
-
-  _findSourceMappingURL: function (source) {
-    var m = /\/\/[#@] ?sourceMappingURL=([^\s'"]+)[\s]*$/.exec(source)
-    if (m && m[1]) {
-      return m[1]
-    }
-    return null
-  },
-
-  getFileSourceMapUrl: function (fileUrl) {
-    var self = this
-    var fileBasePath
-
-    if (!fileUrl) {
-      return Promise.reject('no fileUrl')
-    }
-
-    if (fileUrl.split('/').length > 1) {
-      fileBasePath = fileUrl.split('/').slice(0, -1).join('/') + '/'
-    } else {
-      fileBasePath = '/'
-    }
-
-    return new Promise(function (resolve, reject) {
-      fileFetcher.getFile(fileUrl).then(function (source) {
-        var sourceMapUrl = self._findSourceMappingURL(source)
-        if (sourceMapUrl) {
-          sourceMapUrl = fileBasePath + sourceMapUrl
-          resolve(sourceMapUrl)
-        } else {
-          reject('no sourceMapUrl')
-        }
-      }, reject)
-    })
-  },
-
-  getExceptionContexts: function (url, line) {
-    if (!url || !line) {
-      return Promise.reject('no line or url')
-    }
-
-    return new Promise(function (resolve, reject) {
-      fileFetcher.getFile(url).then(function (source) {
-        line -= 1 // convert line to 0-based index
-
-        var sourceLines = source.split('\n')
-        var linesBefore = 5
-        var linesAfter = 5
-
-        var contexts = {
-          preContext: [],
-          contextLine: null,
-          postContext: []
-        }
-
-        if (sourceLines.length) {
-          var isMinified
-
-          // Treat HTML files as non-minified
-          if (source.indexOf('<html') > -1) {
-            isMinified = false
-          } else {
-            isMinified = this.isSourceMinified(source)
-          }
-
-          // Don't generate contexts if source is minified
-          if (isMinified) {
-            return reject()
-          }
-
-          // Pre context
-          var preStartIndex = Math.max(0, line - linesBefore - 1)
-          var preEndIndex = Math.min(sourceLines.length, line - 1)
-          for (var i = preStartIndex; i <= preEndIndex; ++i) {
-            if (!utils.isUndefined(sourceLines[i])) {
-              contexts.preContext.push(sourceLines[i])
-            }
-          }
-
-          // Line context
-          contexts.contextLine = sourceLines[line]
-
-          // Post context
-          var postStartIndex = Math.min(sourceLines.length, line + 1)
-          var postEndIndex = Math.min(sourceLines.length, line + linesAfter)
-          for (var j = postStartIndex; j <= postEndIndex; ++j) {
-            if (!utils.isUndefined(sourceLines[j])) {
-              contexts.postContext.push(sourceLines[j])
-            }
-          }
-        }
-
-        var charLimit = 1000
-        // Circuit breaker for huge file contexts
-        if (contexts.contextLine.length > charLimit) {
-          reject('aborting generating contexts, as line is over 1000 chars')
-        }
-
-        contexts.preContext.forEach(function (line) {
-          if (line.length > charLimit) {
-            reject('aborting generating contexts, as preContext line is over 1000 chars')
-          }
-        })
-
-        contexts.postContext.forEach(function (line) {
-          if (line.length > charLimit) {
-            reject('aborting generating contexts, as postContext line is over 1000 chars')
-          }
-        })
-
-        resolve(contexts)
-      }.bind(this), reject)
-    }.bind(this))
-  },
-
-  isSourceMinified: function (source) {
-    // Source: https://dxr.mozilla.org/mozilla-central/source/devtools/client/debugger/utils.js#62
-    var SAMPLE_SIZE = 50 // no of lines
-    var INDENT_COUNT_THRESHOLD = 5 // percentage
-    var CHARACTER_LIMIT = 250 // line character limit
-
-    var isMinified
-    var lineEndIndex = 0
-    var lineStartIndex = 0
-    var lines = 0
-    var indentCount = 0
-    var overCharLimit = false
-
-    if (!source) {
-      return false
-    }
-
-    // Strip comments.
-    source = source.replace(/\/\*[\S\s]*?\*\/|\/\/(.+|\n)/g, '')
-
-    while (lines++ < SAMPLE_SIZE) {
-      lineEndIndex = source.indexOf('\n', lineStartIndex)
-      if (lineEndIndex === -1) {
-        break
-      }
-      if (/^\s+/.test(source.slice(lineStartIndex, lineEndIndex))) {
-        indentCount++
-      }
-      // For files with no indents but are not minified.
-      if ((lineEndIndex - lineStartIndex) > CHARACTER_LIMIT) {
-        overCharLimit = true
-        break
-      }
-      lineStartIndex = lineEndIndex + 1
-    }
-
-    isMinified = ((indentCount / lines) * 100) < INDENT_COUNT_THRESHOLD || overCharLimit
-
-    return isMinified
-  }
-
-}
-
-},{"../lib/fileFetcher":31,"../lib/utils":34}],26:[function(_dereq_,module,exports){
-var stackTrace = _dereq_('./stacktrace')
-var frames = _dereq_('./frames')
-
-var ExceptionHandler = function (opbeatBackend, config, logger) {
-  this._opbeatBackend = opbeatBackend
-  this._config = config
-  this._logger = logger
-}
-
-ExceptionHandler.prototype.install = function () {
-  window.onerror = function (msg, file, line, col, error) {
-    this._processError(error, msg, file, line, col)
-  }.bind(this)
-}
-
-ExceptionHandler.prototype.uninstall = function () {
-  window.onerror = null
-}
-
-ExceptionHandler.prototype.processError = function (err) {
-  return this._processError(err)
-}
-
-ExceptionHandler.prototype._processError = function processError (error, msg, file, line, col) {
-  if (msg === 'Script error.' && !file) {
-    // ignoring script errors: See https://github.com/getsentry/raven-js/issues/41
-    return
-  }
-
-  var exception = {
-    'message': error ? error.message : msg,
-    'type': error ? error.name : null,
-    'fileurl': file || null,
-    'lineno': line || null,
-    'colno': col || null
-  }
-
-  if (!exception.type) {
-    // Try to extract type from message formatted like 'ReferenceError: Can't find variable: initHighlighting'
-    if (exception.message.indexOf(':') > -1) {
-      exception.type = exception.message.split(':')[0]
-    }
-  }
-
-  var resolveStackFrames
-
-  if (error) {
-    resolveStackFrames = stackTrace.fromError(error)
-  } else {
-    resolveStackFrames = new Promise(function (resolve, reject) {
-      resolve([{
-        'fileName': file,
-        'lineNumber': line,
-        'columnNumber': col
-      }])
-    })
-  }
-
-  var exceptionHandler = this
-  return resolveStackFrames.then(function (stackFrames) {
-    exception.stack = stackFrames || []
-    return frames.stackInfoToOpbeatException(exception).then(function (exception) {
-      var data = frames.processOpbeatException(exception, exceptionHandler._config.get('context.user'), exceptionHandler._config.get('context.extra'))
-      exceptionHandler._opbeatBackend.sendError(data)
-    })
-  })['catch'](function (error) {
-    exceptionHandler._logger.debug(error)
-  })
-}
-
-module.exports = ExceptionHandler
-
-},{"./frames":27,"./stacktrace":28}],27:[function(_dereq_,module,exports){
-var logger = _dereq_('../lib/logger')
-var config = _dereq_('../lib/config')
-var utils = _dereq_('../lib/utils')
-var context = _dereq_('./context')
-var stackTrace = _dereq_('./stacktrace')
-
-var promiseSequence = function (tasks) {
-  var current = Promise.resolve()
-  var results = []
-
-  for (var k = 0; k < tasks.length; ++k) {
-    results.push(current = current.then(tasks[k]))
-  }
-
-  return Promise.all(results)
-}
-
-module.exports = {
-  getFramesForCurrent: function () {
-    return stackTrace.get().then(function (frames) {
-      var tasks = frames.map(function (frame) {
-        return this.buildOpbeatFrame.bind(this, frame)
-      }.bind(this))
-
-      var allFrames = promiseSequence(tasks)
-
-      return allFrames.then(function (opbeatFrames) {
-        return opbeatFrames
-      })
-    }.bind(this))
-  },
-
-  buildOpbeatFrame: function buildOpbeatFrame (stack) {
-    return new Promise(function (resolve, reject) {
-      if (!stack.fileName && !stack.lineNumber) {
-        // Probably an stack from IE, return empty frame as we can't use it.
-        return resolve({})
-      }
-
-      if (!stack.columnNumber && !stack.lineNumber) {
-        // We can't use frames with no columnNumber & lineNumber, so ignore for now
-        return resolve({})
-      }
-
-      var filePath = this.cleanFilePath(stack.fileName)
-      var fileName = this.filePathToFileName(filePath)
-
-      if (this.isFileInline(filePath)) {
-        fileName = '(inline script)'
-      }
-
-      // Build Opbeat frame data
-      var frame = {
-        'filename': fileName,
-        'lineno': stack.lineNumber,
-        'colno': stack.columnNumber,
-        'function': stack.functionName || '<anonymous>',
-        'abs_path': stack.fileName,
-        'in_app': this.isFileInApp(filePath)
-      }
-
-      // Detect Sourcemaps
-      var sourceMapResolver = context.getFileSourceMapUrl(filePath)
-
-      sourceMapResolver.then(function (sourceMapUrl) {
-        frame.sourcemap_url = sourceMapUrl
-        resolve(frame)
-      }, function () {
-        // // Resolve contexts if no source map
-        var filePath = this.cleanFilePath(stack.fileName)
-        var contextsResolver = context.getExceptionContexts(filePath, stack.lineNumber)
-
-        contextsResolver.then(function (contexts) {
-          frame.pre_context = contexts.preContext
-          frame.context_line = contexts.contextLine
-          frame.post_context = contexts.postContext
-          resolve(frame)
-        })['catch'](function () {
-          resolve(frame)
-        })
-      }.bind(this))
-    }.bind(this))
-  },
-
-  stackInfoToOpbeatException: function (stackInfo) {
-    return new Promise(function (resolve, reject) {
-      if (stackInfo.stack && stackInfo.stack.length) {
-        var tasks = stackInfo.stack.map(function (frame) {
-          return this.buildOpbeatFrame.bind(this, frame)
-        }.bind(this))
-
-        var allFrames = promiseSequence(tasks)
-
-        allFrames.then(function (frames) {
-          stackInfo.frames = frames
-          stackInfo.stack = null
-          resolve(stackInfo)
-        })
-      } else {
-        resolve(stackInfo)
-      }
-    }.bind(this))
-  },
-
-  processOpbeatException: function (exception, userContext, extraContext) {
-    var type = exception.type
-    var message = String(exception.message) || 'Script error'
-    var filePath = this.cleanFilePath(exception.fileurl)
-    var fileName = this.filePathToFileName(filePath)
-    var frames = exception.frames || []
-    var culprit
-
-    if (frames && frames.length) {
-      // Opbeat.com expects frames oldest to newest and JS sends them as newest to oldest
-      frames.reverse()
-    } else if (fileName) {
-      frames.push({
-        filename: fileName,
-        lineno: exception.lineno
-      })
-    }
-
-    var stacktrace = {
-      frames: frames
-    }
-
-    // Set fileName from last frame, if filename is missing
-    if (!fileName && frames.length) {
-      var lastFrame = frames[frames.length - 1]
-      if (lastFrame.filename) {
-        fileName = lastFrame.filename
-      } else {
-        // If filename empty, assume inline script
-        fileName = '(inline script)'
-      }
-    }
-
-    if (this.isFileInline(filePath)) {
-      culprit = '(inline script)'
-    } else {
-      culprit = fileName
-    }
-
-    var data = {
-      message: type + ': ' + message,
-      culprit: culprit,
-      exception: {
-        type: type,
-        value: message
-      },
-      http: {
-        url: window.location.href
-      },
-      stacktrace: stacktrace,
-      user: userContext || {},
-      level: null,
-      logger: null,
-      machine: null
-    }
-
-    data.extra = this.getBrowserSpecificMetadata()
-
-    if (extraContext) {
-      data.extra = utils.mergeObject(data.extra, extraContext)
-    }
-
-    logger.log('opbeat.exceptions.processOpbeatException', data)
-    return data
-  },
-
-  cleanFilePath: function (filePath) {
-    if (!filePath) {
-      filePath = ''
-    }
-
-    if (filePath === '<anonymous>') {
-      filePath = ''
-    }
-
-    return filePath
-  },
-
-  filePathToFileName: function (fileUrl) {
-    var origin = window.location.origin || window.location.protocol + '//' + window.location.hostname + (window.location.port ? (':' + window.location.port) : '')
-
-    if (fileUrl.indexOf(origin) > -1) {
-      fileUrl = fileUrl.replace(origin + '/', '')
-    }
-
-    return fileUrl
-  },
-
-  isFileInline: function (fileUrl) {
-    if (fileUrl) {
-      return window.location.href.indexOf(fileUrl) === 0
-    } else {
-      return false
-    }
-  },
-
-  isFileInApp: function (filename) {
-    var pattern = config.get('libraryPathPattern')
-    return !RegExp(pattern).test(filename)
-  },
-
-  getBrowserSpecificMetadata: function () {
-    var viewportInfo = utils.getViewPortInfo()
-    var extra = {
-      'environment': {
-        'utcOffset': new Date().getTimezoneOffset() / -60.0,
-        'browserWidth': viewportInfo.width,
-        'browserHeight': viewportInfo.height,
-        'screenWidth': window.screen.width,
-        'screenHeight': window.screen.height,
-        'language': navigator.language,
-        'userAgent': navigator.userAgent,
-        'platform': navigator.platform
-      },
-      'page': {
-        'referer': document.referrer,
-        'host': document.domain,
-        'location': window.location.href
-      }
-    }
-
-    return extra
-  }
-
-}
-
-},{"../lib/config":30,"../lib/logger":32,"../lib/utils":34,"./context":25,"./stacktrace":28}],28:[function(_dereq_,module,exports){
-var ErrorStackParser = _dereq_('error-stack-parser')
-var StackGenerator = _dereq_('stack-generator')
-var utils = _dereq_('../lib/utils')
-
-var defaultOptions = {
-  filter: function (stackframe) {
-    // Filter out stackframes for this library by default
-    return (stackframe.functionName || '').indexOf('StackTrace$$') === -1 &&
-    (stackframe.functionName || '').indexOf('ErrorStackParser$$') === -1 &&
-    (stackframe.functionName || '').indexOf('StackGenerator$$') === -1 &&
-    (stackframe.functionName || '').indexOf('opbeatFunctionWrapper') === -1 &&
-    (stackframe.fileName || '').indexOf('opbeat-angular.js') === -1 &&
-    (stackframe.fileName || '').indexOf('opbeat-angular.min.js') === -1 &&
-    (stackframe.fileName || '').indexOf('opbeat.js') === -1 &&
-    (stackframe.fileName || '').indexOf('opbeat.min.js') === -1
-  }
-}
-
-module.exports = {
-  get: function StackTrace$$generate (opts) {
-    try {
-      // Error must be thrown to get stack in IE
-      throw new Error()
-    } catch (err) {
-      if (_isShapedLikeParsableError(err)) {
-        return this.fromError(err, opts)
-      } else {
-        return this.generateArtificially(opts)
-      }
-    }
-  },
-
-  generateArtificially: function StackTrace$$generateArtificially (opts) {
-    opts = utils.mergeObject(defaultOptions, opts)
-
-    var stackFrames = StackGenerator.backtrace(opts)
-    if (typeof opts.filter === 'function') {
-      stackFrames = stackFrames.filter(opts.filter)
-    }
-
-    stackFrames = ErrorStackNormalizer(stackFrames)
-
-    return Promise.resolve(stackFrames)
-  },
-
-  fromError: function StackTrace$$fromError (error, opts) {
-    opts = utils.mergeObject(defaultOptions, opts)
-
-    return new Promise(function (resolve) {
-      var stackFrames = ErrorStackParser.parse(error)
-      if (typeof opts.filter === 'function') {
-        stackFrames = stackFrames.filter(opts.filter)
-      }
-
-      stackFrames = ErrorStackNormalizer(stackFrames)
-
-      resolve(Promise.all(stackFrames.map(function (sf) {
-        return new Promise(function (resolve) {
-          resolve(sf)
-        })
-      })))
-    })
-  }
-}
-
-function _isShapedLikeParsableError (err) {
-  return err.stack || err['opera#sourceloc']
-}
-
-function ErrorStackNormalizer (stackFrames) {
-  return stackFrames.map(function (frame) {
-    if (frame.functionName) {
-      frame.functionName = normalizeFunctionName(frame.functionName)
-    }
-    return frame
-  })
-}
-
-function normalizeFunctionName (fnName) {
-  // SpinderMonkey name convetion (https://developer.mozilla.org/en-US/docs/Tools/Debugger-API/Debugger.Object#Accessor_Properties_of_the_Debugger.Object_prototype)
-
-  // We use a/b to refer to the b defined within a
-  var parts = fnName.split('/')
-  if (parts.length > 1) {
-    fnName = ['Object', parts[parts.length - 1]].join('.')
-  } else {
-    fnName = parts[0]
-  }
-
-  // a< to refer to a function that occurs somewhere within an expression that is assigned to a.
-  fnName = fnName.replace(/.<$/gi, '.<anonymous>')
-
-  // Normalize IE's 'Anonymous function'
-  fnName = fnName.replace(/^Anonymous function$/, '<anonymous>')
-
-  // Always use the last part
-  parts = fnName.split('.')
-  if (parts.length > 1) {
-    fnName = parts[parts.length - 1]
-  } else {
-    fnName = parts[0]
-  }
-
-  return fnName
-}
-
-},{"../lib/utils":34,"error-stack-parser":12,"stack-generator":16}],29:[function(_dereq_,module,exports){
-// export public core APIs.
-
-module.exports['ServiceFactory'] = _dereq_('./common/serviceFactory')
-module.exports['ServiceContainer'] = _dereq_('./performance/serviceContainer')
-module.exports['ConfigService'] = _dereq_('./lib/config')
-module.exports['TransactionService'] = _dereq_('./performance/transactionService')
-module.exports['Subscription'] = _dereq_('./common/subscription')
-
-module.exports['patchUtils'] = _dereq_('./common/patchUtils')
-module.exports['patchCommon'] = _dereq_('./common/patchCommon')
-module.exports['utils'] = _dereq_('./lib/utils')
-
-},{"./common/patchCommon":20,"./common/patchUtils":21,"./common/serviceFactory":23,"./common/subscription":24,"./lib/config":30,"./lib/utils":34,"./performance/serviceContainer":35,"./performance/transactionService":39}],30:[function(_dereq_,module,exports){
-var utils = _dereq_('./utils')
-var Subscription = _dereq_('../common/subscription')
-
-function Config () {
-  this.config = {}
-  this.defaults = {
-    opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.4.0',
-    apiHost: 'intake.opbeat.com',
-    isInstalled: false,
-    debug: false,
-    logLevel: 'warn',
-    orgId: null,
-    appId: null,
-    angularAppName: null,
-    performance: {
-      browserResponsivenessInterval: 500,
-      browserResponsivenessBuffer: 3,
-      checkBrowserResponsiveness: true,
-      enable: true,
-      enableStackFrames: false,
-      groupSimilarTraces: true,
-      similarTraceThreshold: 0.05,
-      captureInteractions: false,
-      sendVerboseDebugInfo: false
-    },
-    libraryPathPattern: '(node_modules|bower_components|webpack)',
-    context: {},
-    platform: {}
-  }
-
-  this._changeSubscription = new Subscription()
-}
-
-Config.prototype.init = function () {
-  var scriptData = _getConfigFromScript()
-  this.setConfig(scriptData)
-}
-
-Config.prototype.get = function (key) {
-  return utils.arrayReduce(key.split('.'), function (obj, i) {
-    return obj && obj[i]
-  }, this.config)
-}
-
-Config.prototype.set = function (key, value) {
-  var levels = key.split('.')
-  var max_level = levels.length - 1
-  var target = this.config
-
-  utils.arraySome(levels, function (level, i) {
-    if (typeof level === 'undefined') {
-      return true
-    }
-    if (i === max_level) {
-      target[level] = value
-    } else {
-      var obj = target[level] || {}
-      target[level] = obj
-      target = obj
-    }
-  })
-}
-
-Config.prototype.getAgentName = function () {
-  var version = this.config['VERSION']
-  if (!version || version.indexOf('%%VERSION') >= 0) {
-    version = 'dev'
-  }
-  return this.get('opbeatAgentName') + '/' + version
-}
-
-Config.prototype.setConfig = function (properties) {
-  properties = properties || {}
-  this.config = utils.merge({}, this.defaults, this.config, properties)
-
-  this._changeSubscription.applyAll(this, [this.config])
-}
-
-Config.prototype.subscribeToChange = function (fn) {
-  return this._changeSubscription.subscribe(fn)
-}
-
-Config.prototype.isValid = function () {
-  var requiredKeys = ['appId', 'orgId']
-  var values = utils.arrayMap(requiredKeys, utils.functionBind(function (key) {
-    return (this.config[key] === null) || (this.config[key] === undefined)
-  }, this))
-
-  return utils.arrayIndexOf(values, true) === -1
-}
-
-var _getConfigFromScript = function () {
-  var script = utils.getCurrentScript()
-  var config = _getDataAttributesFromNode(script)
-  return config
-}
-
-function _getDataAttributesFromNode (node) {
-  var dataAttrs = {}
-  var dataRegex = /^data\-([\w\-]+)$/
-
-  if (node) {
-    var attrs = node.attributes
-    for (var i = 0; i < attrs.length; i++) {
-      var attr = attrs[i]
-      if (dataRegex.test(attr.nodeName)) {
-        var key = attr.nodeName.match(dataRegex)[1]
-
-        // camelCase key
-        key = utils.arrayMap(key.split('-'), function (group, index) {
-          return index > 0 ? group.charAt(0).toUpperCase() + group.substring(1) : group
-        }).join('')
-
-        dataAttrs[key] = attr.value || attr.nodeValue
-      }
-    }
-  }
-
-  return dataAttrs
-}
-
-Config.prototype.VERSION = 'v3.4.0'
-
-Config.prototype.isPlatformSupported = function () {
-  return typeof Array.prototype.forEach === 'function' &&
-    typeof JSON.stringify === 'function' &&
-    typeof Function.bind === 'function' &&
-    window.performance &&
-    typeof window.performance.now === 'function' &&
-    utils.isCORSSupported()
-}
-
-module.exports = new Config()
-
-},{"../common/subscription":24,"./utils":34}],31:[function(_dereq_,module,exports){
-var SimpleCache = _dereq_('simple-lru-cache')
-var transport = _dereq_('./transport')
-
-var cache = new SimpleCache({
-  'maxSize': 1000
-})
-
-module.exports = {
-  getFile: function (url) {
-    var cachedPromise = cache.get(url)
-    if (typeof cachedPromise !== 'undefined') {
-      return cachedPromise
-    }
-    var filePromise = transport.getFile(url)
-    cache.set(url, filePromise)
-    return filePromise
-  }
-}
-
-},{"./transport":33,"simple-lru-cache":14}],32:[function(_dereq_,module,exports){
-var config = _dereq_('./config')
-
-var logStack = []
-
-module.exports = {
-  getLogStack: function () {
-    return logStack
-  },
-
-  error: function (msg, data) {
-    return this.log('%c ' + msg, 'color: red', data)
-  },
-
-  warning: function (msg, data) {
-    return this.log('%c ' + msg, 'background-color: ffff00', data)
-  },
-
-  log: function (message, data) {
-    // Optimized copy of arguments (V8 https://github.com/GoogleChrome/devtools-docs/issues/53#issuecomment-51941358)
-    var args = new Array(arguments.length)
-    for (var i = 0, l = arguments.length; i < l; i++) {
-      args[i] = arguments[i]
-    }
-
-    var isDebugMode = config.get('debug') === true || config.get('debug') === 'true'
-    var hasConsole = window.console
-
-    logStack.push({
-      msg: message,
-      data: args.slice(1)
-    })
-
-    if (isDebugMode && hasConsole) {
-      if (typeof Function.prototype.bind === 'function') {
-        return window.console.log.apply(window.console, args)
-      } else {
-        return Function.prototype.apply.call(window.console.log, window.console, args)
-      }
-    }
-  }
-}
-
-},{"./config":30}],33:[function(_dereq_,module,exports){
-var logger = _dereq_('./logger')
-var config = _dereq_('./config')
-
-module.exports = {
-  sendError: function (data, headers) {
-    return _sendToOpbeat('errors', data, headers)
-  },
-
-  sendTransaction: function (data, headers) {
-    return _sendToOpbeat('transactions', data, headers)
-  },
-
-  getFile: function (fileUrl) {
-    return _makeRequest(fileUrl, 'GET', '', {})
-  }
-}
-
-function _sendToOpbeat (endpoint, data, headers) {
-  logger.log('opbeat.transport.sendToOpbeat', data)
-
-  var url = 'https://' + config.get('apiHost') + '/api/v1/organizations/' + config.get('orgId') + '/apps/' + config.get('appId') + '/client-side/' + endpoint + '/'
-
-  return _makeRequest(url, 'POST', 'JSON', data, headers)
-}
-
-function _makeRequest (url, method, type, data, headers) {
-  return new Promise(function (resolve, reject) {
-    var xhr = new window.XMLHttpRequest()
-
-    xhr.open(method, url, true)
-    xhr.timeout = 10000
-
-    if (type === 'JSON') {
-      xhr.setRequestHeader('Content-Type', 'application/json')
-    }
-
-    if (headers) {
-      for (var header in headers) {
-        if (headers.hasOwnProperty(header)) {
-          xhr.setRequestHeader(header.toLowerCase(), headers[header])
-        }
-      }
-    }
-
-    xhr.onreadystatechange = function (evt) {
-      if (xhr.readyState === 4) {
-        var status = xhr.status
-        if (status === 0 || status > 399 && status < 600) {
-          // An http 4xx or 5xx error. Signal an error.
-          var err = new Error(url + ' HTTP status: ' + status)
-          err.xhr = xhr
-          reject(err)
-          logger.log('opbeat.transport.makeRequest.error', err)
-        } else {
-          resolve(xhr.responseText)
-          logger.log('opbeat.transport.makeRequest.success')
-        }
-      }
-    }
-
-    xhr.onerror = function (err) {
-      reject(err)
-      logger.log('opbeat.transport.makeRequest.error', err)
-    }
-
-    if (type === 'JSON') {
-      data = JSON.stringify(data)
-    }
-
-    xhr.send(data)
-  })
-}
-
-},{"./config":30,"./logger":32}],34:[function(_dereq_,module,exports){
-var slice = [].slice
-
-module.exports = {
-  getViewPortInfo: function getViewPort () {
-    var e = document.documentElement
-    var g = document.getElementsByTagName('body')[0]
-    var x = window.innerWidth || e.clientWidth || g.clientWidth
-    var y = window.innerHeight || e.clientHeight || g.clientHeight
-
-    return {
-      width: x,
-      height: y
-    }
-  },
-
-  mergeObject: function (o1, o2) {
-    var a
-    var o3 = {}
-
-    for (a in o1) {
-      o3[a] = o1[a]
-    }
-
-    for (a in o2) {
-      o3[a] = o2[a]
-    }
-
-    return o3
-  },
-
-  extend: function extend (dst) {
-    return this.baseExtend(dst, slice.call(arguments, 1), false)
-  },
-
-  merge: function merge (dst) {
-    return this.baseExtend(dst, slice.call(arguments, 1), true)
-  },
-
-  baseExtend: function baseExtend (dst, objs, deep) {
-    for (var i = 0, ii = objs.length; i < ii; ++i) {
-      var obj = objs[i]
-      if (!isObject(obj) && !isFunction(obj)) continue
-      var keys = Object.keys(obj)
-      for (var j = 0, jj = keys.length; j < jj; j++) {
-        var key = keys[j]
-        var src = obj[key]
-
-        if (deep && isObject(src)) {
-          if (!isObject(dst[key])) dst[key] = Array.isArray(src) ? [] : {}
-          baseExtend(dst[key], [src], false) // only one level of deep merge
-        } else {
-          dst[key] = src
-        }
-      }
-    }
-
-    return dst
-  },
-
-  isObject: isObject,
-
-  isFunction: isFunction,
-
-  arrayReduce: function (arrayValue, callback, value) {
-    // Source: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/reduce
-    if (arrayValue == null) {
-      throw new TypeError('Array.prototype.reduce called on null or undefined')
-    }
-    if (typeof callback !== 'function') {
-      throw new TypeError(callback + ' is not a function')
-    }
-    var t = Object(arrayValue)
-    var len = t.length >>> 0
-    var k = 0
-
-    if (!value) {
-      while (k < len && !(k in t)) {
-        k++
-      }
-      if (k >= len) {
-        throw new TypeError('Reduce of empty array with no initial value')
-      }
-      value = t[k++]
-    }
-
-    for (; k < len; k++) {
-      if (k in t) {
-        value = callback(value, t[k], k, t)
-      }
-    }
-    return value
-  },
-
-  arraySome: function (value, callback, thisArg) {
-    // Source: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/some
-    if (value == null) {
-      throw new TypeError('Array.prototype.some called on null or undefined')
-    }
-
-    if (typeof callback !== 'function') {
-      throw new TypeError()
-    }
-
-    var t = Object(value)
-    var len = t.length >>> 0
-
-    if (!thisArg) {
-      thisArg = void 0
-    }
-
-    for (var i = 0; i < len; i++) {
-      if (i in t && callback.call(thisArg, t[i], i, t)) {
-        return true
-      }
-    }
-    return false
-  },
-
-  arrayMap: function (arrayValue, callback, thisArg) {
-    // Source https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/Map
-    var T, A, k
-
-    if (this == null) {
-      throw new TypeError(' this is null or not defined')
-    }
-    var O = Object(arrayValue)
-    var len = O.length >>> 0
-
-    if (typeof callback !== 'function') {
-      throw new TypeError(callback + ' is not a function')
-    }
-    if (arguments.length > 1) {
-      T = thisArg
-    }
-    A = new Array(len)
-    k = 0
-    while (k < len) {
-      var kValue, mappedValue
-      if (k in O) {
-        kValue = O[k]
-        mappedValue = callback.call(T, kValue, k, O)
-        A[k] = mappedValue
-      }
-      k++
-    }
-    return A
-  },
-
-  arrayIndexOf: function (arrayVal, searchElement, fromIndex) {
-    // Source: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/indexOf
-    var k
-    if (arrayVal == null) {
-      throw new TypeError('"arrayVal" is null or not defined')
-    }
-
-    var o = Object(arrayVal)
-    var len = o.length >>> 0
-
-    if (len === 0) {
-      return -1
-    }
-
-    var n = +fromIndex || 0
-
-    if (Math.abs(n) === Infinity) {
-      n = 0
-    }
-
-    if (n >= len) {
-      return -1
-    }
-
-    k = Math.max(n >= 0 ? n : len - Math.abs(n), 0)
-
-    while (k < len) {
-      if (k in o && o[k] === searchElement) {
-        return k
-      }
-      k++
-    }
-    return -1
-  },
-
-  functionBind: function (func, oThis) {
-    // Source: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/bind
-    var aArgs = Array.prototype.slice.call(arguments, 2)
-    var FNOP = function () {}
-    var fBound = function () {
-      return func.apply(oThis, aArgs.concat(Array.prototype.slice.call(arguments)))
-    }
-
-    FNOP.prototype = func.prototype
-    fBound.prototype = new FNOP()
-    return fBound
-  },
-
-  getRandomInt: function (min, max) {
-    return Math.floor(Math.random() * (max - min + 1)) + min
-  },
-
-  isUndefined: function (obj) {
-    return (typeof obj) === 'undefined'
-  },
-
-  isCORSSupported: function () {
-    var xhr = new window.XMLHttpRequest()
-    return 'withCredentials' in xhr
-  },
-
-  getCurrentScript: function () {
-    // Source http://www.2ality.com/2014/05/current-script.html
-    return document.currentScript || (function () {
-      var scripts = document.getElementsByTagName('script')
-      return scripts[scripts.length - 1]
-    })()
-  },
-
-  generateUuid: function () {
-    function _p8 (s) {
-      var p = (Math.random().toString(16) + '000000000').substr(2, 8)
-      return s ? '-' + p.substr(0, 4) + '-' + p.substr(4, 4) : p
-    }
-    return _p8() + _p8(true) + _p8(true) + _p8()
-  }
-
-}
-
-function isObject (value) {
-  // http://jsperf.com/isobject4
-  return value !== null && typeof value === 'object'
-}
-
-function isFunction (value) {
-  return typeof value === 'function'
-}
-
-},{}],35:[function(_dereq_,module,exports){
-var TransactionService = _dereq_('./transactionService')
-var ZoneService = _dereq_('./zoneService')
-var utils = _dereq_('../lib/utils')
-
-function ServiceContainer (serviceFactory) {
-  this.serviceFactory = serviceFactory
-  this.services = {}
-  this.services.configService = this.serviceFactory.getConfigService()
-  this.services.logger = this.serviceFactory.getLogger()
-  this.services.zoneService = this.createZoneService()
-}
-
-ServiceContainer.prototype.initialize = function () {
-  var configService = this.services.configService
-  var logger = this.services.logger
-  var zoneService = this.services.zoneService
-
-  var opbeatBackend = this.services.opbeatBackend = this.serviceFactory.getOpbeatBackend()
-  var transactionService = this.services.transactionService = this.services.transactionService = new TransactionService(zoneService, this.services.logger, configService, opbeatBackend)
-  transactionService.scheduleTransactionSend()
-
-  if (utils.isUndefined(window.opbeatApi)) {
-    window.opbeatApi = {}
-  }
-  window.opbeatApi.subscribeToTransactions = transactionService.subscribe.bind(transactionService)
-
-  if (!utils.isUndefined(window.opbeatApi.onload)) {
-    var onOpbeatLoaded = window.opbeatApi.onload
-    onOpbeatLoaded.forEach(function (fn) {
-      try {
-        fn()
-      } catch (error) {
-        logger.error(error)
-      }
-    })
-  }
-}
-
-ServiceContainer.prototype.createZoneService = function () {
-  var logger = this.services.logger
-
-  return new ZoneService(window.Zone.current, logger, this.services.configService)
-}
-
-module.exports = ServiceContainer
-
-},{"../lib/utils":34,"./transactionService":39,"./zoneService":40}],36:[function(_dereq_,module,exports){
-var frames = _dereq_('../exceptions/frames')
-var traceCache = _dereq_('./traceCache')
-var utils = _dereq_('../lib/utils')
-
-function Trace (transaction, signature, type, options) {
-  this.transaction = transaction
-  this.signature = signature
-  this.type = type
-  this.ended = false
-  this._parent = null
-  this._diff = null
-  this._end = null
-
-  // Start timers
-  this._start = window.performance.now()
-
-  this._isFinish = new Promise(function (resolve, reject) {
-    this._markFinishedFunc = resolve
-  }.bind(this))
-
-  if (utils.isUndefined(options) || options == null) {
-    options = {}
-  }
-  var shouldGenerateStackFrames = options['enableStackFrames']
-
-  if (shouldGenerateStackFrames) {
-    this.getTraceStackFrames(function (frames) {
-      if (frames) {
-        this.frames = frames.reverse() // Reverse frames to make Opbeat happy
-      }
-      this._markFinishedFunc() // Mark the trace as finished
-    }.bind(this))
-  } else {
-    this._markFinishedFunc() // Mark the trace as finished
-  }
-}
-
-Trace.prototype.calcDiff = function () {
-  if (!this._end || !this._start) {
-    return
-  }
-  this._diff = this._end - this._start
-}
-
-Trace.prototype.end = function () {
-  this._end = window.performance.now()
-
-  this.calcDiff()
-  this.ended = true
-  if (!utils.isUndefined(this.transaction) && typeof this.transaction._onTraceEnd === 'function') {
-    this.transaction._onTraceEnd(this)
-  }
-}
-
-Trace.prototype.duration = function () {
-  if (!this.ended || !this._start) {
-    return null
-  }
-  this._diff = this._end - this._start
-
-  return parseFloat(this._diff)
-}
-
-Trace.prototype.startTime = function () {
-  if (!this.ended || !this.transaction.ended) {
-    return null
-  }
-
-  return this._start
-}
-
-Trace.prototype.ancestors = function () {
-  var parent = this.parent()
-  if (!parent) {
-    return []
-  } else {
-    return [parent.signature]
-  }
-}
-
-Trace.prototype.parent = function () {
-  return this._parent
-}
-
-Trace.prototype.setParent = function (val) {
-  this._parent = val
-}
-
-Trace.prototype.getFingerprint = function () {
-  var key = [this.transaction.name, this.signature, this.type]
-
-  // Iterate over parents
-  var prev = this._parent
-  while (prev) {
-    key.push(prev.signature)
-    prev = prev._parent
-  }
-
-  return key.join('-')
-}
-
-Trace.prototype.getTraceStackFrames = function (callback) {
-  // Use callbacks instead of Promises to keep the stack
-  var key = this.getFingerprint()
-  var traceFrames = traceCache.get(key)
-  if (traceFrames) {
-    callback(traceFrames)
-  } else {
-    frames.getFramesForCurrent().then(function (traceFrames) {
-      traceCache.set(key, traceFrames)
-      callback(traceFrames)
-    })['catch'](function () {
-      callback(null)
-    })
-  }
-}
-
-module.exports = Trace
-
-},{"../exceptions/frames":27,"../lib/utils":34,"./traceCache":37}],37:[function(_dereq_,module,exports){
-var SimpleCache = _dereq_('simple-lru-cache')
-
-module.exports = new SimpleCache({
-  'maxSize': 5000
-})
-
-},{"simple-lru-cache":14}],38:[function(_dereq_,module,exports){
-var Trace = _dereq_('./trace')
-var utils = _dereq_('../lib/utils')
-
-var Transaction = function (name, type, options) {
-  this.metadata = {}
-  this.name = name
-  this.type = type
-  this.ended = false
-  this._markDoneAfterLastTrace = false
-  this._isDone = false
-  this._options = options
-  if (typeof options === 'undefined') {
-    this._options = {}
-  }
-
-  this.contextInfo = {
-    debug: {},
-    browser: {
-      location: window.location.href
-    }
-  }
-  if (this._options.sendVerboseDebugInfo) {
-    this.contextInfo.debug.log = []
-    this.debugLog('Transaction', name, type)
-  }
-
-  this.traces = []
-  this._activeTraces = {}
-
-  this._scheduledTasks = {}
-
-  this.events = {}
-
-  Promise.call(this.donePromise = Object.create(Promise.prototype), function (resolve, reject) {
-    this._resolve = resolve
-    this._reject = reject
-  }.bind(this.donePromise))
-
-  // A transaction should always have a root trace spanning the entire transaction.
-  this._rootTrace = this.startTrace('transaction', 'transaction', {enableStackFrames: false})
-  this._startStamp = new Date()
-  this._start = this._rootTrace._start
-
-  this.duration = this._rootTrace.duration.bind(this._rootTrace)
-  this.nextId = 0
-}
-
-Transaction.prototype.debugLog = function () {
-  if (this._options.sendVerboseDebugInfo) {
-    var messages = (arguments.length === 1 ? [arguments[0]] : Array.apply(null, arguments))
-    messages.unshift(Date.now().toString())
-    this.contextInfo.debug.log.push(messages.join(' - '))
-  }
-}
-
-Transaction.prototype.redefine = function (name, type, options) {
-  this.debugLog('redefine', name, type)
-  this.name = name
-  this.type = type
-  this._options = options
-}
-
-Transaction.prototype.startTrace = function (signature, type, options) {
-  // todo: should not accept more traces if the transaction is alreadyFinished
-  this.debugLog('startTrace', signature, type)
-  var opts = typeof options === 'undefined' ? {} : options
-  opts.enableStackFrames = this._options.enableStackFrames === true && opts.enableStackFrames !== false
-
-  var trace = new Trace(this, signature, type, opts)
-  trace.traceId = this.nextId
-  this.nextId++
-  if (this._rootTrace) {
-    trace.setParent(this._rootTrace)
-    this._activeTraces[trace.traceId] = trace
-  }
-
-  return trace
-}
-
-Transaction.prototype.recordEvent = function (e) {
-  var event = this.events[e.name]
-  if (utils.isUndefined(event)) {
-    event = { name: e.name, start: e.start, end: e.end, time: e.end - e.start, count: 0 }
-    this.events[event.name] = event
-  } else {
-    event.time += (e.end - e.start)
-    event.count++
-    event.end = e.end
-  }
-}
-
-Transaction.prototype.isFinished = function () {
-  var scheduledTasks = Object.keys(this._scheduledTasks)
-  this.debugLog('isFinished scheduledTasks.length', scheduledTasks.length)
-  return (scheduledTasks.length === 0)
-}
-
-Transaction.prototype.detectFinish = function () {
-  if (this.isFinished()) this.end()
-}
-
-Transaction.prototype.end = function () {
-  if (this.ended) {
-    return
-  }
-  this.debugLog('end')
-  this.ended = true
-  this._rootTrace.end()
-
-  if (this.isFinished() === true) {
-    this._finish()
-  }
-  return this.donePromise
-}
-
-Transaction.prototype.addTask = function (taskId) {
-  // todo: should not accept more tasks if the transaction is alreadyFinished]
-  this.debugLog('addTask', taskId)
-  this._scheduledTasks[taskId] = taskId
-}
-
-Transaction.prototype.removeTask = function (taskId) {
-  this.debugLog('removeTask', taskId)
-  this.contextInfo.debug.lastRemovedTask = taskId
-  delete this._scheduledTasks[taskId]
-}
-
-Transaction.prototype.addEndedTraces = function (existingTraces) {
-  this.traces = this.traces.concat(existingTraces)
-}
-
-Transaction.prototype._onTraceEnd = function (trace) {
-  this.traces.push(trace)
-  trace._scheduledTasks = Object.keys(this._scheduledTasks)
-  // Remove trace from _activeTraces
-  delete this._activeTraces[trace.traceId]
-}
-
-Transaction.prototype._finish = function () {
-  if (this._alreadFinished === true) {
-    return
-  }
-
-  this._alreadFinished = true
-
-  for (var key in this.events) {
-    var event = this.events[key]
-    var eventTrace = new Trace(this, key, key, this._options)
-    eventTrace.ended = true
-    eventTrace._start = event.start
-    eventTrace._diff = event.time
-    eventTrace._end = event.end
-    eventTrace.setParent(this._rootTrace)
-    this.traces.push(eventTrace)
-  }
-
-  this._adjustStartToEarliestTrace()
-  this._adjustEndToLatestTrace()
-
-  var self = this
-  var whenAllTracesFinished = self.traces.map(function (trace) {
-    return trace._isFinish
-  })
-
-  Promise.all(whenAllTracesFinished).then(function () {
-    self.donePromise._resolve(self)
-  })
-}
-
-Transaction.prototype._adjustEndToLatestTrace = function () {
-  var latestTrace = findLatestTrace(this.traces)
-  if (typeof latestTrace !== 'undefined') {
-    this._rootTrace._end = latestTrace._end
-    this._rootTrace.calcDiff()
-  }
-}
-
-Transaction.prototype._adjustStartToEarliestTrace = function () {
-  var trace = getEarliestTrace(this.traces)
-
-  if (trace) {
-    this._rootTrace._start = trace._start
-    this._rootTrace.calcDiff()
-    this._start = this._rootTrace._start
-  }
-}
-
-function getEarliestTrace (traces) {
-  var earliestTrace = null
-
-  traces.forEach(function (trace) {
-    if (!earliestTrace) {
-      earliestTrace = trace
-    }
-    if (earliestTrace && earliestTrace._start > trace._start) {
-      earliestTrace = trace
-    }
-  })
-
-  return earliestTrace
-}
-
-function findLatestTrace (traces) {
-  var latestTrace = null
-
-  traces.forEach(function (trace) {
-    if (!latestTrace) {
-      latestTrace = trace
-    }
-    if (latestTrace && latestTrace._end < trace._end) {
-      latestTrace = trace
-    }
-  })
-
-  return latestTrace
-}
-
-module.exports = Transaction
-
-},{"../lib/utils":34,"./trace":36}],39:[function(_dereq_,module,exports){
-var Transaction = _dereq_('./transaction')
-var utils = _dereq_('../lib/utils')
-var Subscription = _dereq_('../common/subscription')
-
-function TransactionService (zoneService, logger, config, opbeatBackend) {
-  this._config = config
-  if (typeof config === 'undefined') {
-    logger.debug('TransactionService: config is not provided')
-  }
-  this._queue = []
-  this._logger = logger
-  this._opbeatBackend = opbeatBackend
-  this._zoneService = zoneService
-
-  this.transactions = []
-  this.nextId = 1
-
-  this.taskMap = {}
-
-  this._queue = []
-
-  this._subscription = new Subscription()
-
-  var transactionService = this
-
-  function onBeforeInvokeTask (task) {
-    if (task.source === 'XMLHttpRequest.send' && task.trace && !task.trace.ended) {
-      task.trace.end()
-    }
-    transactionService.logInTransaction('Executing', task.taskId)
-  }
-  zoneService.spec.onBeforeInvokeTask = onBeforeInvokeTask
-
-  function onScheduleTask (task) {
-    if (task.source === 'XMLHttpRequest.send') {
-      var trace = transactionService.startTrace(task['XHR']['method'] + ' ' + task['XHR']['url'], 'ext.HttpRequest', {'enableStackFrames': false})
-      task.trace = trace
-    }
-    transactionService.addTask(task.taskId)
-  }
-  zoneService.spec.onScheduleTask = onScheduleTask
-
-  function onInvokeTask (task) {
-    transactionService.removeTask(task.taskId)
-    transactionService.detectFinish()
-  }
-  zoneService.spec.onInvokeTask = onInvokeTask
-
-  function onCancelTask (task) {
-    transactionService.removeTask(task.taskId)
-    transactionService.detectFinish()
-  }
-  zoneService.spec.onCancelTask = onCancelTask
-}
-
-TransactionService.prototype.getTransaction = function (id) {
-  return this.transactions[id]
-}
-
-TransactionService.prototype.createTransaction = function (name, type, options) {
-  var tr = new Transaction(name, type, options)
-  tr.contextInfo.debug.zone = this._zoneService.zone.name
-  this._zoneService.set('transaction', tr)
-  if (this._config.get('performance.checkBrowserResponsiveness')) {
-    this.startCounter(tr)
-  }
-  return tr
-}
-
-TransactionService.prototype.startCounter = function (transaction) {
-  transaction.browserResponsivenessCounter = 0
-  var interval = this._config.get('performance.browserResponsivenessInterval')
-  if (typeof interval === 'undefined') {
-    this._logger.debug('browserResponsivenessInterval is undefined!')
-    return
-  }
-  this._zoneService.runOuter(function () {
-    var id = setInterval(function () {
-      if (transaction.ended) {
-        window.clearInterval(id)
-      } else {
-        transaction.browserResponsivenessCounter++
-      }
-    }, interval)
-  })
-}
-
-TransactionService.prototype.getCurrentTransaction = function () {
-  var tr = this._zoneService.get('transaction')
-  if (!utils.isUndefined(tr) && !tr.ended) {
-    return tr
-  }
-}
-
-TransactionService.prototype.startTransaction = function (name, type) {
-  var self = this
-
-  var perfOptions = this._config.get('performance')
-  if (!perfOptions.enable) {
-    return
-  }
-
-  if (type === 'interaction' && !perfOptions.captureInteractions) {
-    return
-  }
-
-  var tr = this._zoneService.get('transaction')
-  if (!this.getCurrentTransaction()) {
-    tr = this.createTransaction(name, type, perfOptions)
-  } else {
-    tr.redefine(name, type, perfOptions)
-  }
-
-  if (this.transactions.indexOf(tr) === -1) {
-    this._logger.debug('TransactionService.startTransaction', tr)
-    var p = tr.donePromise
-    p.then(function (t) {
-      self._logger.debug('TransactionService transaction finished', tr)
-      self.add(tr)
-      self._subscription.applyAll(self, [tr])
-
-      var index = self.transactions.indexOf(tr)
-      if (index !== -1) {
-        self.transactions.splice(index, 1)
-      }
-    })
-    this.transactions.push(tr)
-  }
-
-  return tr
-}
-
-TransactionService.prototype.startTrace = function (signature, type, options) {
-  var perfOptions = this._config.get('performance')
-  if (!perfOptions.enable) {
-    return
-  }
-
-  var trans = this.getCurrentTransaction()
-
-  if (trans) {
-    this._logger.debug('TransactionService.startTrace', signature, type)
-  } else {
-    trans = this.createTransaction('ZoneTransaction', 'transaction', perfOptions)
-    this._logger.debug('TransactionService.startTrace - ZoneTransaction', signature, type)
-  }
-
-  var trace = trans.startTrace(signature, type, options)
-  // var zone = this._zoneService.getCurrentZone()
-  // trace._zone = 'Zone(' + zone.$id + ') ' // parent(' + zone.parent.$id + ') '
-  return trace
-}
-
-TransactionService.prototype.add = function (transaction) {
-  var perfOptions = this._config.get('performance')
-  if (!perfOptions.enable) {
-    return
-  }
-
-  this._queue.push(transaction)
-  this._logger.debug('TransactionService.add', transaction)
-}
-
-TransactionService.prototype.getTransactions = function () {
-  return this._queue
-}
-
-TransactionService.prototype.clearTransactions = function () {
-  this._queue = []
-}
-
-TransactionService.prototype.subscribe = function (fn) {
-  return this._subscription.subscribe(fn)
-}
-
-TransactionService.prototype.addTask = function (taskId) {
-  var tr = this._zoneService.get('transaction')
-  if (!utils.isUndefined(tr) && !tr.ended) {
-    tr.addTask(taskId)
-    this._logger.debug('TransactionService.addTask', taskId)
-  }
-}
-TransactionService.prototype.removeTask = function (taskId) {
-  var tr = this._zoneService.get('transaction')
-  if (!utils.isUndefined(tr) && !tr.ended) {
-    tr.removeTask(taskId)
-    this._logger.debug('TransactionService.removeTask', taskId)
-  }
-}
-TransactionService.prototype.logInTransaction = function () {
-  var tr = this._zoneService.get('transaction')
-  if (!utils.isUndefined(tr) && !tr.ended) {
-    tr.debugLog.apply(tr, arguments)
-  }
-}
-
-TransactionService.prototype.detectFinish = function () {
-  var tr = this._zoneService.get('transaction')
-  if (!utils.isUndefined(tr) && !tr.ended) {
-    tr.detectFinish()
-    this._logger.debug('TransactionService.detectFinish')
-  }
-}
-
-TransactionService.prototype.scheduleTransactionSend = function () {
-  var logger = this._logger
-  var opbeatBackend = this._opbeatBackend
-  var self = this
-
-  setInterval(function () {
-    var transactions = self.getTransactions()
-    if (transactions.length === 0) {
-      return
-    }
-    logger.debug('Sending Transactions to opbeat.', transactions.length)
-    // todo: if transactions are already being sent, should check
-    opbeatBackend.sendTransactions(transactions)
-    self.clearTransactions()
-  }, 5000)
-}
-
-module.exports = TransactionService
-
-},{"../common/subscription":24,"../lib/utils":34,"./transaction":38}],40:[function(_dereq_,module,exports){
-var Subscription = _dereq_('../common/subscription')
-var patchUtils = _dereq_('../common/patchUtils')
-var opbeatTaskSymbol = patchUtils.opbeatSymbol('taskData')
-
-var urlSympbol = patchUtils.opbeatSymbol('url')
-var methodSymbol = patchUtils.opbeatSymbol('method')
-
-var XMLHttpRequest_send = 'XMLHttpRequest.send'
-
-var opbeatDataSymbol = patchUtils.opbeatSymbol('opbeatData')
-
-function ZoneService (zone, logger, config) {
-  this.events = new Subscription()
-
-  var nextId = 0
-
-  this.events = new Subscription()
-  // var zoneService = this
-  function noop () { }
-  var spec = this.spec = {
-    onScheduleTask: noop,
-    onBeforeInvokeTask: noop,
-    onInvokeTask: noop,
-    onCancelTask: noop,
-    onHandleError: noop
-  }
-
-  var zoneConfig = {
-    name: 'opbeatRootZone',
-    onScheduleTask: function (parentZoneDelegate, currentZone, targetZone, task) {
-      if (task.type === 'eventTask' && task.data.eventName === 'opbeatImmediatelyFiringEvent') {
-        task.data.handler(task.data)
-        return task
-      }
-
-      var hasTarget = task.data && task.data.target
-      if (hasTarget && typeof task.data.target[opbeatDataSymbol] === 'undefined') {
-        task.data.target[opbeatDataSymbol] = {registeredEventListeners: {}}
-      }
-
-      logger.trace('zoneservice.onScheduleTask', task.source, ' type:', task.type)
-      if (task.type === 'macroTask') {
-        logger.trace('Zone: ', targetZone.name)
-        var taskId = nextId++
-        var opbeatTask = {
-          taskId: task.source + taskId,
-          source: task.source,
-          type: task.type
-        }
-
-        if (task.source === 'setTimeout') {
-          if (task.data.args[1] === 0) {
-            task[opbeatTaskSymbol] = opbeatTask
-            spec.onScheduleTask(opbeatTask)
-          }
-        } else if (task.source === XMLHttpRequest_send) {
-          /*
-                  "XMLHttpRequest.addEventListener:load"
-                  "XMLHttpRequest.addEventListener:error"
-                  "XMLHttpRequest.addEventListener:abort"
-                  "XMLHttpRequest.send"
-                  "XMLHttpRequest.addEventListener:readystatechange"
-          */
-
-          opbeatTask['XHR'] = {
-            resolved: false,
-            'send': false,
-            url: task.data.target[urlSympbol],
-            method: task.data.target[methodSymbol]
-          }
-
-          // target for event tasks is different instance from the XMLHttpRequest, on mobile browsers
-          // A hack to get the correct target for event tasks
-          task.data.target.addEventListener('opbeatImmediatelyFiringEvent', function (event) {
-            if (typeof event.target[opbeatDataSymbol] !== 'undefined') {
-              task.data.target[opbeatDataSymbol] = event.target[opbeatDataSymbol]
-            } else {
-              task.data.target[opbeatDataSymbol] = event.target[opbeatDataSymbol] = {registeredEventListeners: {}}
-            }
-          })
-
-          task.data.target[opbeatDataSymbol].task = opbeatTask
-          task.data.target[opbeatDataSymbol].typeName = 'XMLHttpRequest'
-
-          spec.onScheduleTask(opbeatTask)
-        }
-      } else if (task.type === 'eventTask' && hasTarget && (task.data.eventName === 'readystatechange' || task.data.eventName === 'load')) {
-        task.data.target[opbeatDataSymbol].registeredEventListeners[task.data.eventName] = {resolved: false}
-      }
-
-      var delegateTask = parentZoneDelegate.scheduleTask(targetZone, task)
-      return delegateTask
-    },
-    onInvokeTask: function (parentZoneDelegate, currentZone, targetZone, task, applyThis, applyArgs) {
-      logger.trace('zoneservice.onInvokeTask', task.source, ' type:', task.type)
-      var hasTarget = task.data && task.data.target
-      var result
-
-      if (hasTarget && task.data.target[opbeatDataSymbol].typeName === 'XMLHttpRequest') {
-        var opbeatData = task.data.target[opbeatDataSymbol]
-        logger.trace('opbeatData', opbeatData)
-        var opbeatTask = opbeatData.task
-
-        if (opbeatTask && task.data.eventName === 'readystatechange' && task.data.target.readyState === task.data.target.DONE) {
-          opbeatData.registeredEventListeners['readystatechange'].resolved = true
-          spec.onBeforeInvokeTask(opbeatTask)
-        } else if (opbeatTask && task.data.eventName === 'load' && 'load' in opbeatData.registeredEventListeners) {
-          opbeatData.registeredEventListeners.load.resolved = true
-        } else if (opbeatTask && task.source === XMLHttpRequest_send) {
-          opbeatTask.XHR.resolved = true
-        }
-
-        result = parentZoneDelegate.invokeTask(targetZone, task, applyThis, applyArgs)
-        if (opbeatTask && (!opbeatData.registeredEventListeners['load'] || opbeatData.registeredEventListeners['load'].resolved) && (!opbeatData.registeredEventListeners['readystatechange'] || opbeatData.registeredEventListeners['readystatechange'].resolved) && opbeatTask.XHR.resolved) {
-          spec.onInvokeTask(opbeatTask)
-        }
-      } else if (task[opbeatTaskSymbol] && (task.source === 'setTimeout')) {
-        spec.onBeforeInvokeTask(task[opbeatTaskSymbol])
-        result = parentZoneDelegate.invokeTask(targetZone, task, applyThis, applyArgs)
-        spec.onInvokeTask(task[opbeatTaskSymbol])
-      } else {
-        result = parentZoneDelegate.invokeTask(targetZone, task, applyThis, applyArgs)
-      }
-      return result
-    },
-    onCancelTask: function (parentZoneDelegate, currentZone, targetZone, task) {
-      // logger.trace('Zone: ', targetZone.name)
-      var opbeatTask
-      if (task.type === 'macroTask') {
-        if (task.source === XMLHttpRequest_send) {
-          opbeatTask = task.data.target[opbeatDataSymbol].task
-          spec.onCancelTask(opbeatTask)
-        } else if (task[opbeatTaskSymbol] && (task.source === 'setTimeout')) {
-          opbeatTask = task[opbeatTaskSymbol]
-          spec.onCancelTask(opbeatTask)
-        }
-      }
-      return parentZoneDelegate.cancelTask(targetZone, task)
-    }
-  // onHandleError: function (parentZoneDelegate, currentZone, targetZone, error) {
-  //   spec.onHandleError(error)
-  //   parentZoneDelegate.handleError(targetZone, error)
-  // }
-  }
-
-  // if (config.get('debug') === true) {
-  //   zoneConfig.properties = {opbeatZoneData: {name: 'opbeatRootZone', children: []}}
-  //   zoneConfig.onFork = function (parentZoneDelegate, currentZone, targetZone, zoneSpec) {
-  //     var childZone = parentZoneDelegate.fork(targetZone, zoneSpec)
-  //     console.log('onFork: ', arguments)
-  //     console.log('onFork: ', childZone)
-
-  //     var childZoneData = {name: childZone.name}
-
-  //     if (targetZone._properties['opbeatZoneData']) {
-  //       targetZone._properties['opbeatZoneData'].children.push(childZoneData)
-  //     } else {
-  //       targetZone._properties['opbeatZoneData'] = {
-  //         name: targetZone.name,
-  //         children: [childZoneData]
-  //       }
-  //     }
-  //     console.log('onFork:opbeatZoneData:', targetZone._properties['opbeatZoneData'])
-  //     return childZone
-  //   }
-  // }
-  this.outer = zone
-  this.zone = zone.fork(zoneConfig)
-}
-
-ZoneService.prototype.set = function (key, value) {
-  window.Zone.current._properties[key] = value
-}
-ZoneService.prototype.get = function (key) {
-  return window.Zone.current.get(key)
-}
-
-ZoneService.prototype.getCurrentZone = function () {
-  return window.zone
-}
-
-ZoneService.prototype.runOuter = function (fn) {
-  return this.outer.run(fn)
-}
-
-ZoneService.prototype.runInOpbeatZone = function runInOpbeatZone (fn, applyThis, applyArgs) {
-  if (this.zone.name === window.Zone.current.name) {
-    return fn.apply(applyThis, applyArgs)
-  } else {
-    return this.zone.run(fn, applyThis, applyArgs)
-  }
-}
-
-module.exports = ZoneService
-
-},{"../common/patchUtils":21,"../common/subscription":24}]},{},[4]);
+},{}]},{},[34]);
