@@ -1611,9 +1611,13 @@ function patchDeferredBootstrap (zoneService, beforeBootstrap) {
     var originalResumeBootstrap = window.angular.resumeBootstrap
     Object.defineProperty(window.angular, 'resumeBootstrap', {
       get: function () {
-        return function (modules) {
-          beforeBootstrap(modules)
-          return zoneService.runInOpbeatZone(originalResumeBootstrap, window.angular, arguments)
+        if (typeof originalResumeBootstrap === 'function') {
+          return function (modules) {
+            beforeBootstrap(modules)
+            return zoneService.runInOpbeatZone(originalResumeBootstrap, window.angular, arguments)
+          }
+        } else {
+          return originalResumeBootstrap
         }
       },
       set: function (resumeBootstrap) {
@@ -4318,7 +4322,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.6.0',
+    VERSION: 'v3.6.1',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -4434,7 +4438,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.6.0'
+Config.prototype.VERSION = 'v3.6.1'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
