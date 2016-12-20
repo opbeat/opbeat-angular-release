@@ -1412,7 +1412,7 @@ function registerOpbeatModule (services) {
 
 module.exports = initialize
 
-},{"./ngOpbeat":3,"./patches/bootstrapPatch":5,"opbeat-js-core":33}],3:[function(_dereq_,module,exports){
+},{"./ngOpbeat":3,"./patches/bootstrapPatch":5,"opbeat-js-core":29}],3:[function(_dereq_,module,exports){
 var patchController = _dereq_('./patches/controllerPatch')
 var patchCompile = _dereq_('./patches/compilePatch')
 var patchRootScope = _dereq_('./patches/rootScopePatch')
@@ -1569,7 +1569,7 @@ function init () {
 
 init()
 
-},{"./angularInitializer":2,"opbeat-js-core":33,"zone.js":1}],5:[function(_dereq_,module,exports){
+},{"./angularInitializer":2,"opbeat-js-core":29,"zone.js":1}],5:[function(_dereq_,module,exports){
 var DEFER_LABEL = 'NG_DEFER_BOOTSTRAP!'
 var deferRegex = new RegExp('^' + DEFER_LABEL + '.*')
 
@@ -1584,7 +1584,7 @@ function patchMainBootstrap (zoneService, beforeBootstrap, weDeferred) {
     if (weDeferred && deferRegex.test(window.name)) {
       window.name = window.name.substring(DEFER_LABEL.length)
     }
-    return zoneService.runInOpbeatZone(originalBootstrapFn, window.angular, arguments)
+    return zoneService.runInOpbeatZone(originalBootstrapFn, window.angular, arguments, 'angular:bootstrap')
   }
 
   Object.defineProperty(window.angular, 'bootstrap', {
@@ -1614,7 +1614,7 @@ function patchDeferredBootstrap (zoneService, beforeBootstrap) {
         if (typeof originalResumeBootstrap === 'function') {
           return function (modules) {
             beforeBootstrap(modules)
-            return zoneService.runInOpbeatZone(originalResumeBootstrap, window.angular, arguments)
+            return zoneService.runInOpbeatZone(originalResumeBootstrap, window.angular, arguments, 'angular:bootstrap')
           }
         } else {
           return originalResumeBootstrap
@@ -1632,7 +1632,7 @@ function patchDeferredBootstrap (zoneService, beforeBootstrap) {
     window.angular.resumeDeferredBootstrap = function () {
       var modules = []
       beforeBootstrap(modules)
-      return zoneService.runInOpbeatZone(window.angular.resumeBootstrap, window.angular, [modules])
+      return zoneService.runInOpbeatZone(window.angular.resumeBootstrap, window.angular, [modules], 'angular:bootstrap')
     }
     /* angular should remove DEFER_LABEL from window.name, but if angular is never loaded, we want
      to remove it ourselves */
@@ -1718,7 +1718,7 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{"opbeat-js-core":33}],7:[function(_dereq_,module,exports){
+},{"opbeat-js-core":29}],7:[function(_dereq_,module,exports){
 var utils = _dereq_('opbeat-js-core').utils
 
 function getControllerInfoFromArgs (args) {
@@ -1768,7 +1768,7 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{"opbeat-js-core":33}],8:[function(_dereq_,module,exports){
+},{"opbeat-js-core":29}],8:[function(_dereq_,module,exports){
 var utils = _dereq_('opbeat-js-core').utils
 module.exports = function ($provide, transactionService) {
   'use strict'
@@ -1830,7 +1830,7 @@ function humanReadableWatchExpression (fn) {
   return fn.toString()
 }
 
-},{"opbeat-js-core":33}],9:[function(_dereq_,module,exports){
+},{"opbeat-js-core":29}],9:[function(_dereq_,module,exports){
 
 module.exports = function patchExceptionHandler ($provide) {
   $provide.decorator('$exceptionHandler', ['$delegate', '$opbeat', function $ExceptionHandlerDecorator ($delegate, $opbeat) {
@@ -2116,7 +2116,7 @@ function decorateRootScope ($delegate, transactionService) {
 
 
 }).call(this,undefined)
-},{"stackframe":19}],13:[function(_dereq_,module,exports){
+},{"stackframe":17}],13:[function(_dereq_,module,exports){
 (function (define){
 /*
 * loglevel - https://github.com/pimterry/loglevel
@@ -2344,112 +2344,9 @@ function decorateRootScope ($delegate, transactionService) {
 
 }).call(this,undefined)
 },{}],14:[function(_dereq_,module,exports){
-'use strict';
-
-var has = Object.prototype.hasOwnProperty;
-
-/**
- * Simple query string parser.
- *
- * @param {String} query The query string that needs to be parsed.
- * @returns {Object}
- * @api public
- */
-function querystring(query) {
-  var parser = /([^=?&]+)=?([^&]*)/g
-    , result = {}
-    , part;
-
-  //
-  // Little nifty parsing hack, leverage the fact that RegExp.exec increments
-  // the lastIndex property so we can continue executing this loop until we've
-  // parsed all results.
-  //
-  for (;
-    part = parser.exec(query);
-    result[decodeURIComponent(part[1])] = decodeURIComponent(part[2])
-  );
-
-  return result;
-}
-
-/**
- * Transform a query string to an object.
- *
- * @param {Object} obj Object that should be transformed.
- * @param {String} prefix Optional prefix.
- * @returns {String}
- * @api public
- */
-function querystringify(obj, prefix) {
-  prefix = prefix || '';
-
-  var pairs = [];
-
-  //
-  // Optionally prefix with a '?' if needed
-  //
-  if ('string' !== typeof prefix) prefix = '?';
-
-  for (var key in obj) {
-    if (has.call(obj, key)) {
-      pairs.push(encodeURIComponent(key) +'='+ encodeURIComponent(obj[key]));
-    }
-  }
-
-  return pairs.length ? prefix + pairs.join('&') : '';
-}
-
-//
-// Expose the module.
-//
-exports.stringify = querystringify;
-exports.parse = querystring;
-
-},{}],15:[function(_dereq_,module,exports){
-'use strict';
-
-/**
- * Check if we're required to add a port number.
- *
- * @see https://url.spec.whatwg.org/#default-port
- * @param {Number|String} port Port number we need to check
- * @param {String} protocol Protocol we need to check against.
- * @returns {Boolean} Is it a default port for the given protocol
- * @api private
- */
-module.exports = function required(port, protocol) {
-  protocol = protocol.split(':')[0];
-  port = +port;
-
-  if (!port) return false;
-
-  switch (protocol) {
-    case 'http':
-    case 'ws':
-    return port !== 80;
-
-    case 'https':
-    case 'wss':
-    return port !== 443;
-
-    case 'ftp':
-    return port !== 21;
-
-    case 'gopher':
-    return port !== 70;
-
-    case 'file':
-    return false;
-  }
-
-  return port !== 0;
-};
-
-},{}],16:[function(_dereq_,module,exports){
 module.exports = _dereq_('./lib/simple_lru.js');
 
-},{"./lib/simple_lru.js":17}],17:[function(_dereq_,module,exports){
+},{"./lib/simple_lru.js":15}],15:[function(_dereq_,module,exports){
 "use strict";
 
 /**
@@ -2597,7 +2494,7 @@ Cache.prototype.forEach = function(callback){
 }
 module.exports=Cache
 
-},{}],18:[function(_dereq_,module,exports){
+},{}],16:[function(_dereq_,module,exports){
 (function (define){
 (function (root, factory) {
     'use strict';
@@ -2646,7 +2543,7 @@ module.exports=Cache
 }));
 
 }).call(this,undefined)
-},{"stackframe":19}],19:[function(_dereq_,module,exports){
+},{"stackframe":17}],17:[function(_dereq_,module,exports){
 (function (define){
 (function (root, factory) {
     'use strict';
@@ -2757,423 +2654,7 @@ module.exports=Cache
 }));
 
 }).call(this,undefined)
-},{}],20:[function(_dereq_,module,exports){
-'use strict';
-
-var required = _dereq_('requires-port')
-  , lolcation = _dereq_('./lolcation')
-  , qs = _dereq_('querystringify')
-  , protocolre = /^([a-z][a-z0-9.+-]*:)?(\/\/)?([\S\s]*)/i;
-
-/**
- * These are the parse rules for the URL parser, it informs the parser
- * about:
- *
- * 0. The char it Needs to parse, if it's a string it should be done using
- *    indexOf, RegExp using exec and NaN means set as current value.
- * 1. The property we should set when parsing this value.
- * 2. Indication if it's backwards or forward parsing, when set as number it's
- *    the value of extra chars that should be split off.
- * 3. Inherit from location if non existing in the parser.
- * 4. `toLowerCase` the resulting value.
- */
-var rules = [
-  ['#', 'hash'],                        // Extract from the back.
-  ['?', 'query'],                       // Extract from the back.
-  ['/', 'pathname'],                    // Extract from the back.
-  ['@', 'auth', 1],                     // Extract from the front.
-  [NaN, 'host', undefined, 1, 1],       // Set left over value.
-  [/:(\d+)$/, 'port', undefined, 1],    // RegExp the back.
-  [NaN, 'hostname', undefined, 1, 1]    // Set left over.
-];
-
-/**
- * @typedef ProtocolExtract
- * @type Object
- * @property {String} protocol Protocol matched in the URL, in lowercase.
- * @property {Boolean} slashes `true` if protocol is followed by "//", else `false`.
- * @property {String} rest Rest of the URL that is not part of the protocol.
- */
-
-/**
- * Extract protocol information from a URL with/without double slash ("//").
- *
- * @param {String} address URL we want to extract from.
- * @return {ProtocolExtract} Extracted information.
- * @api private
- */
-function extractProtocol(address) {
-  var match = protocolre.exec(address);
-
-  return {
-    protocol: match[1] ? match[1].toLowerCase() : '',
-    slashes: !!match[2],
-    rest: match[3]
-  };
-}
-
-/**
- * Resolve a relative URL pathname against a base URL pathname.
- *
- * @param {String} relative Pathname of the relative URL.
- * @param {String} base Pathname of the base URL.
- * @return {String} Resolved pathname.
- * @api private
- */
-function resolve(relative, base) {
-  var path = (base || '/').split('/').slice(0, -1).concat(relative.split('/'))
-    , i = path.length
-    , last = path[i - 1]
-    , unshift = false
-    , up = 0;
-
-  while (i--) {
-    if (path[i] === '.') {
-      path.splice(i, 1);
-    } else if (path[i] === '..') {
-      path.splice(i, 1);
-      up++;
-    } else if (up) {
-      if (i === 0) unshift = true;
-      path.splice(i, 1);
-      up--;
-    }
-  }
-
-  if (unshift) path.unshift('');
-  if (last === '.' || last === '..') path.push('');
-
-  return path.join('/');
-}
-
-/**
- * The actual URL instance. Instead of returning an object we've opted-in to
- * create an actual constructor as it's much more memory efficient and
- * faster and it pleases my OCD.
- *
- * @constructor
- * @param {String} address URL we want to parse.
- * @param {Object|String} location Location defaults for relative paths.
- * @param {Boolean|Function} parser Parser for the query string.
- * @api public
- */
-function URL(address, location, parser) {
-  if (!(this instanceof URL)) {
-    return new URL(address, location, parser);
-  }
-
-  var relative, extracted, parse, instruction, index, key
-    , instructions = rules.slice()
-    , type = typeof location
-    , url = this
-    , i = 0;
-
-  //
-  // The following if statements allows this module two have compatibility with
-  // 2 different API:
-  //
-  // 1. Node.js's `url.parse` api which accepts a URL, boolean as arguments
-  //    where the boolean indicates that the query string should also be parsed.
-  //
-  // 2. The `URL` interface of the browser which accepts a URL, object as
-  //    arguments. The supplied object will be used as default values / fall-back
-  //    for relative paths.
-  //
-  if ('object' !== type && 'string' !== type) {
-    parser = location;
-    location = null;
-  }
-
-  if (parser && 'function' !== typeof parser) parser = qs.parse;
-
-  location = lolcation(location);
-
-  //
-  // Extract protocol information before running the instructions.
-  //
-  extracted = extractProtocol(address || '');
-  relative = !extracted.protocol && !extracted.slashes;
-  url.slashes = extracted.slashes || relative && location.slashes;
-  url.protocol = extracted.protocol || location.protocol || '';
-  address = extracted.rest;
-
-  //
-  // When the authority component is absent the URL starts with a path
-  // component.
-  //
-  if (!extracted.slashes) instructions[2] = [/(.*)/, 'pathname'];
-
-  for (; i < instructions.length; i++) {
-    instruction = instructions[i];
-    parse = instruction[0];
-    key = instruction[1];
-
-    if (parse !== parse) {
-      url[key] = address;
-    } else if ('string' === typeof parse) {
-      if (~(index = address.indexOf(parse))) {
-        if ('number' === typeof instruction[2]) {
-          url[key] = address.slice(0, index);
-          address = address.slice(index + instruction[2]);
-        } else {
-          url[key] = address.slice(index);
-          address = address.slice(0, index);
-        }
-      }
-    } else if (index = parse.exec(address)) {
-      url[key] = index[1];
-      address = address.slice(0, index.index);
-    }
-
-    url[key] = url[key] || (
-      relative && instruction[3] ? location[key] || '' : ''
-    );
-
-    //
-    // Hostname, host and protocol should be lowercased so they can be used to
-    // create a proper `origin`.
-    //
-    if (instruction[4]) url[key] = url[key].toLowerCase();
-  }
-
-  //
-  // Also parse the supplied query string in to an object. If we're supplied
-  // with a custom parser as function use that instead of the default build-in
-  // parser.
-  //
-  if (parser) url.query = parser(url.query);
-
-  //
-  // If the URL is relative, resolve the pathname against the base URL.
-  //
-  if (
-      relative
-    && location.slashes
-    && url.pathname.charAt(0) !== '/'
-    && (url.pathname !== '' || location.pathname !== '')
-  ) {
-    url.pathname = resolve(url.pathname, location.pathname);
-  }
-
-  //
-  // We should not add port numbers if they are already the default port number
-  // for a given protocol. As the host also contains the port number we're going
-  // override it with the hostname which contains no port number.
-  //
-  if (!required(url.port, url.protocol)) {
-    url.host = url.hostname;
-    url.port = '';
-  }
-
-  //
-  // Parse down the `auth` for the username and password.
-  //
-  url.username = url.password = '';
-  if (url.auth) {
-    instruction = url.auth.split(':');
-    url.username = instruction[0] || '';
-    url.password = instruction[1] || '';
-  }
-
-  url.origin = url.protocol && url.host && url.protocol !== 'file:'
-    ? url.protocol +'//'+ url.host
-    : 'null';
-
-  //
-  // The href is just the compiled result.
-  //
-  url.href = url.toString();
-}
-
-/**
- * This is convenience method for changing properties in the URL instance to
- * insure that they all propagate correctly.
- *
- * @param {String} part          Property we need to adjust.
- * @param {Mixed} value          The newly assigned value.
- * @param {Boolean|Function} fn  When setting the query, it will be the function
- *                               used to parse the query.
- *                               When setting the protocol, double slash will be
- *                               removed from the final url if it is true.
- * @returns {URL}
- * @api public
- */
-URL.prototype.set = function set(part, value, fn) {
-  var url = this;
-
-  switch (part) {
-    case 'query':
-      if ('string' === typeof value && value.length) {
-        value = (fn || qs.parse)(value);
-      }
-
-      url[part] = value;
-      break;
-
-    case 'port':
-      url[part] = value;
-
-      if (!required(value, url.protocol)) {
-        url.host = url.hostname;
-        url[part] = '';
-      } else if (value) {
-        url.host = url.hostname +':'+ value;
-      }
-
-      break;
-
-    case 'hostname':
-      url[part] = value;
-
-      if (url.port) value += ':'+ url.port;
-      url.host = value;
-      break;
-
-    case 'host':
-      url[part] = value;
-
-      if (/:\d+$/.test(value)) {
-        value = value.split(':');
-        url.port = value.pop();
-        url.hostname = value.join(':');
-      } else {
-        url.hostname = value;
-        url.port = '';
-      }
-
-      break;
-
-    case 'protocol':
-      url.protocol = value.toLowerCase();
-      url.slashes = !fn;
-      break;
-
-    case 'pathname':
-      url.pathname = value.length && value.charAt(0) !== '/' ? '/' + value : value;
-
-      break;
-
-    default:
-      url[part] = value;
-  }
-
-  for (var i = 0; i < rules.length; i++) {
-    var ins = rules[i];
-
-    if (ins[4]) url[ins[1]] = url[ins[1]].toLowerCase();
-  }
-
-  url.origin = url.protocol && url.host && url.protocol !== 'file:'
-    ? url.protocol +'//'+ url.host
-    : 'null';
-
-  url.href = url.toString();
-
-  return url;
-};
-
-/**
- * Transform the properties back in to a valid and full URL string.
- *
- * @param {Function} stringify Optional query stringify function.
- * @returns {String}
- * @api public
- */
-URL.prototype.toString = function toString(stringify) {
-  if (!stringify || 'function' !== typeof stringify) stringify = qs.stringify;
-
-  var query
-    , url = this
-    , protocol = url.protocol;
-
-  if (protocol && protocol.charAt(protocol.length - 1) !== ':') protocol += ':';
-
-  var result = protocol + (url.slashes ? '//' : '');
-
-  if (url.username) {
-    result += url.username;
-    if (url.password) result += ':'+ url.password;
-    result += '@';
-  }
-
-  result += url.host + url.pathname;
-
-  query = 'object' === typeof url.query ? stringify(url.query) : url.query;
-  if (query) result += '?' !== query.charAt(0) ? '?'+ query : query;
-
-  if (url.hash) result += url.hash;
-
-  return result;
-};
-
-//
-// Expose the URL parser and some additional properties that might be useful for
-// others or testing.
-//
-URL.extractProtocol = extractProtocol;
-URL.location = lolcation;
-URL.qs = qs;
-
-module.exports = URL;
-
-},{"./lolcation":21,"querystringify":14,"requires-port":15}],21:[function(_dereq_,module,exports){
-(function (global){
-'use strict';
-
-var slashes = /^[A-Za-z][A-Za-z0-9+-.]*:\/\//;
-
-/**
- * These properties should not be copied or inherited from. This is only needed
- * for all non blob URL's as a blob URL does not include a hash, only the
- * origin.
- *
- * @type {Object}
- * @private
- */
-var ignore = { hash: 1, query: 1 }
-  , URL;
-
-/**
- * The location object differs when your code is loaded through a normal page,
- * Worker or through a worker using a blob. And with the blobble begins the
- * trouble as the location object will contain the URL of the blob, not the
- * location of the page where our code is loaded in. The actual origin is
- * encoded in the `pathname` so we can thankfully generate a good "default"
- * location from it so we can generate proper relative URL's again.
- *
- * @param {Object|String} loc Optional default location object.
- * @returns {Object} lolcation object.
- * @api public
- */
-module.exports = function lolcation(loc) {
-  loc = loc || global.location || {};
-  URL = URL || _dereq_('./');
-
-  var finaldestination = {}
-    , type = typeof loc
-    , key;
-
-  if ('blob:' === loc.protocol) {
-    finaldestination = new URL(unescape(loc.pathname), {});
-  } else if ('string' === type) {
-    finaldestination = new URL(loc, {});
-    for (key in ignore) delete finaldestination[key];
-  } else if ('object' === type) {
-    for (key in loc) {
-      if (key in ignore) continue;
-      finaldestination[key] = loc[key];
-    }
-
-    if (finaldestination.slashes === undefined) {
-      finaldestination.slashes = slashes.test(loc.href);
-    }
-  }
-
-  return finaldestination;
-};
-
-}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./":20}],22:[function(_dereq_,module,exports){
+},{}],18:[function(_dereq_,module,exports){
 module.exports = {
   createValidFrames: function createValidFrames (frames) {
     var result = []
@@ -3186,10 +2667,9 @@ module.exports = {
   }
 }
 
-},{}],23:[function(_dereq_,module,exports){
+},{}],19:[function(_dereq_,module,exports){
 var backendUtils = _dereq_('./backend_utils')
 var utils = _dereq_('../lib/utils')
-var URL = _dereq_('url-parse')
 
 module.exports = OpbeatBackend
 function OpbeatBackend (transport, logger, config) {
@@ -3271,6 +2751,53 @@ OpbeatBackend.prototype.checkBrowserResponsiveness = function (transaction, inte
   return wasBrowserResponsive
 }
 
+OpbeatBackend.prototype.setTransactionContextInfo = function setTransactionContextInfo (transaction) {
+  var opbeatBackend = this
+  var browserResponsivenessInterval = opbeatBackend._config.get('performance.browserResponsivenessInterval')
+  var checkBrowserResponsiveness = opbeatBackend._config.get('performance.checkBrowserResponsiveness')
+
+  var context = opbeatBackend._config.get('context')
+  if (context) {
+    transaction.contextInfo = utils.merge(transaction.contextInfo || {}, context)
+  }
+
+  var ctx = transaction.contextInfo
+  var url = ctx.url
+  if (url && url.location) {
+    url.location = url.location.substring(0, 511)
+
+    // var parsed = new URL(ctx.url.location, true)
+    var parsed = utils.parseUrl(url.location)
+
+    var protocol = parsed.protocol
+    var acceptedProtocols = ['http:', 'https:', 'file:']
+    if (acceptedProtocols.indexOf(protocol) < 0) {
+      delete url.location
+    } else {
+      url.base = parsed.path
+      if (Object.keys(parsed.queryStringParsed).length > 0) {
+        url.query = parsed.queryStringParsed
+      }
+      if (parsed.hash) {
+        url.hash = parsed.hash
+      }
+    }
+  }
+  if (!ctx.system) {
+    ctx.system = {}
+  }
+  ctx.system.opbeat = opbeatBackend._config.getAgentName()
+
+  if (!ctx.debug) {
+    ctx.debug = {}
+  }
+
+  if (checkBrowserResponsiveness) {
+    ctx.debug.browserResponsivenessCounter = transaction.browserResponsivenessCounter
+    ctx.debug.browserResponsivenessInterval = browserResponsivenessInterval
+  }
+}
+
 OpbeatBackend.prototype.sendTransactions = function (transactionList) {
   var opbeatBackend = this
   if (this._config.isValid()) {
@@ -3286,42 +2813,7 @@ OpbeatBackend.prototype.sendTransactions = function (transactionList) {
         var similarTraceThreshold = opbeatBackend._config.get('performance.similarTraceThreshold')
         transaction.traces = opbeatBackend.groupSmallContinuouslySimilarTraces(transaction, similarTraceThreshold)
       }
-      var context = opbeatBackend._config.get('context')
-      if (context) {
-        transaction.contextInfo = utils.merge(transaction.contextInfo || {}, context)
-      }
-
-      var ctx = transaction.contextInfo
-      if (ctx.browser && ctx.browser.location) {
-        ctx.browser.location = ctx.browser.location.substring(0, 511)
-
-        var parsed = new URL(ctx.browser.location, true)
-
-        var protocol = parsed.protocol
-        var acceptedProtocols = ['http:', 'https:', 'file:']
-        if (acceptedProtocols.indexOf(protocol) < 0) {
-          delete ctx.browser.location
-        } else {
-          var url = {protocol: parsed.protocol, host: parsed.host}
-          ctx.browser.url = url
-          if (parsed.pathname) {
-            url.pathname = parsed.pathname
-          }
-          if (Object.keys(parsed.query).length > 0) {
-            url.query = parsed.query
-          }
-          if (parsed.hash) {
-            url.hash = parsed.hash
-          }
-        }
-      }
-      if (checkBrowserResponsiveness) {
-        if (!ctx.debug) {
-          ctx.debug = {}
-        }
-        ctx.debug.browserResponsivenessCounter = transaction.browserResponsivenessCounter
-        ctx.debug.browserResponsivenessInterval = browserResponsivenessInterval
-      }
+      opbeatBackend.setTransactionContextInfo(transaction)
     })
 
     var filterTransactions = transactionList.filter(function (tr) {
@@ -3514,7 +3006,7 @@ function traceGroupingKey (trace) {
   ].join('-')
 }
 
-},{"../lib/utils":38,"./backend_utils":22,"url-parse":20}],24:[function(_dereq_,module,exports){
+},{"../lib/utils":34,"./backend_utils":18}],20:[function(_dereq_,module,exports){
 var patchXMLHttpRequest = _dereq_('./patches/xhrPatch')
 
 function patchCommon (serviceContainer) {
@@ -3523,7 +3015,7 @@ function patchCommon (serviceContainer) {
 
 module.exports = patchCommon
 
-},{"./patches/xhrPatch":26}],25:[function(_dereq_,module,exports){
+},{"./patches/xhrPatch":22}],21:[function(_dereq_,module,exports){
 module.exports = {
   patchFunction: function patchModule (delegate, options) {},
   _copyProperties: function _copyProperties (source, target) {
@@ -3598,7 +3090,7 @@ function createNamedFn (name, delegate) {
   }
 }
 
-},{}],26:[function(_dereq_,module,exports){
+},{}],22:[function(_dereq_,module,exports){
 var patchUtils = _dereq_('../patchUtils')
 
 var urlSympbol = patchUtils.opbeatSymbol('url')
@@ -3616,7 +3108,7 @@ module.exports = function patchXMLHttpRequest () {
   })
 }
 
-},{"../patchUtils":25}],27:[function(_dereq_,module,exports){
+},{"../patchUtils":21}],23:[function(_dereq_,module,exports){
 var OpbeatBackend = _dereq_('../backend/opbeat_backend')
 var Logger = _dereq_('loglevel')
 var Config = _dereq_('../lib/config')
@@ -3695,7 +3187,7 @@ ServiceFactory.prototype.getPerformanceServiceContainer = function () {
 
 module.exports = ServiceFactory
 
-},{"../backend/opbeat_backend":23,"../exceptions/exceptionHandler":30,"../lib/config":34,"../lib/transport":37,"../lib/utils":38,"../performance/serviceContainer":39,"loglevel":13}],28:[function(_dereq_,module,exports){
+},{"../backend/opbeat_backend":19,"../exceptions/exceptionHandler":26,"../lib/config":30,"../lib/transport":33,"../lib/utils":34,"../performance/serviceContainer":35,"loglevel":13}],24:[function(_dereq_,module,exports){
 function Subscription () {
   this.subscriptions = []
 }
@@ -3724,7 +3216,7 @@ Subscription.prototype.applyAll = function (applyTo, applyWith) {
 
 module.exports = Subscription
 
-},{}],29:[function(_dereq_,module,exports){
+},{}],25:[function(_dereq_,module,exports){
 var utils = _dereq_('../lib/utils')
 var fileFetcher = _dereq_('../lib/fileFetcher')
 
@@ -3887,7 +3379,7 @@ module.exports = {
 
 }
 
-},{"../lib/fileFetcher":35,"../lib/utils":38}],30:[function(_dereq_,module,exports){
+},{"../lib/fileFetcher":31,"../lib/utils":34}],26:[function(_dereq_,module,exports){
 var stackTrace = _dereq_('./stacktrace')
 var frames = _dereq_('./frames')
 
@@ -3960,7 +3452,7 @@ ExceptionHandler.prototype._processError = function processError (error, msg, fi
 
 module.exports = ExceptionHandler
 
-},{"./frames":31,"./stacktrace":32}],31:[function(_dereq_,module,exports){
+},{"./frames":27,"./stacktrace":28}],27:[function(_dereq_,module,exports){
 var logger = _dereq_('../lib/logger')
 var config = _dereq_('../lib/config')
 var utils = _dereq_('../lib/utils')
@@ -4191,7 +3683,7 @@ module.exports = {
 
 }
 
-},{"../lib/config":34,"../lib/logger":36,"../lib/utils":38,"./context":29,"./stacktrace":32}],32:[function(_dereq_,module,exports){
+},{"../lib/config":30,"../lib/logger":32,"../lib/utils":34,"./context":25,"./stacktrace":28}],28:[function(_dereq_,module,exports){
 var ErrorStackParser = _dereq_('error-stack-parser')
 var StackGenerator = _dereq_('stack-generator')
 var utils = _dereq_('../lib/utils')
@@ -4298,7 +3790,7 @@ function normalizeFunctionName (fnName) {
   return fnName
 }
 
-},{"../lib/utils":38,"error-stack-parser":12,"stack-generator":18}],33:[function(_dereq_,module,exports){
+},{"../lib/utils":34,"error-stack-parser":12,"stack-generator":16}],29:[function(_dereq_,module,exports){
 // export public core APIs.
 
 module.exports['ServiceFactory'] = _dereq_('./common/serviceFactory')
@@ -4314,7 +3806,7 @@ module.exports['utils'] = _dereq_('./lib/utils')
 var test = module.exports['test'] = {}
 test.ZoneServiceMock = _dereq_('../test/performance/zoneServiceMock')
 
-},{"../test/performance/zoneServiceMock":45,"./common/patchCommon":24,"./common/patchUtils":25,"./common/serviceFactory":27,"./common/subscription":28,"./lib/config":34,"./lib/utils":38,"./performance/serviceContainer":39,"./performance/transactionService":43}],34:[function(_dereq_,module,exports){
+},{"../test/performance/zoneServiceMock":41,"./common/patchCommon":20,"./common/patchUtils":21,"./common/serviceFactory":23,"./common/subscription":24,"./lib/config":30,"./lib/utils":34,"./performance/serviceContainer":35,"./performance/transactionService":39}],30:[function(_dereq_,module,exports){
 var utils = _dereq_('./utils')
 var Subscription = _dereq_('../common/subscription')
 
@@ -4322,7 +3814,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.6.1',
+    VERSION: 'v3.7.0',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -4438,7 +3930,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.6.1'
+Config.prototype.VERSION = 'v3.7.0'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
@@ -4451,7 +3943,7 @@ Config.prototype.isPlatformSupported = function () {
 
 module.exports = new Config()
 
-},{"../common/subscription":28,"./utils":38}],35:[function(_dereq_,module,exports){
+},{"../common/subscription":24,"./utils":34}],31:[function(_dereq_,module,exports){
 var SimpleCache = _dereq_('simple-lru-cache')
 var transport = _dereq_('./transport')
 
@@ -4471,7 +3963,7 @@ module.exports = {
   }
 }
 
-},{"./transport":37,"simple-lru-cache":16}],36:[function(_dereq_,module,exports){
+},{"./transport":33,"simple-lru-cache":14}],32:[function(_dereq_,module,exports){
 var config = _dereq_('./config')
 
 var logStack = []
@@ -4514,7 +4006,7 @@ module.exports = {
   }
 }
 
-},{"./config":34}],37:[function(_dereq_,module,exports){
+},{"./config":30}],33:[function(_dereq_,module,exports){
 var logger = _dereq_('./logger')
 var config = _dereq_('./config')
 
@@ -4588,7 +4080,7 @@ function _makeRequest (url, method, type, data, headers) {
   })
 }
 
-},{"./config":34,"./logger":36}],38:[function(_dereq_,module,exports){
+},{"./config":30,"./logger":32}],34:[function(_dereq_,module,exports){
 var slice = [].slice
 
 module.exports = {
@@ -4822,11 +4314,11 @@ module.exports = {
     var match = PATH_MATCH.exec(url)
     var path = match[1] || ''
     var queryString = match[3] || ''
-    var hash = match[5] || ''
+    var hash = match[5] ? '#' + match[5] : ''
 
     var protocol = ''
     if (url.indexOf('://') > -1) {
-      protocol = url.split('://')[0]
+      protocol = url.split('://')[0] + ':'
     }
 
     var params = {}
@@ -4854,7 +4346,7 @@ function isFunction (value) {
   return typeof value === 'function'
 }
 
-},{}],39:[function(_dereq_,module,exports){
+},{}],35:[function(_dereq_,module,exports){
 var TransactionService = _dereq_('./transactionService')
 var ZoneService = _dereq_('./zoneService')
 var utils = _dereq_('../lib/utils')
@@ -4901,7 +4393,7 @@ ServiceContainer.prototype.createZoneService = function () {
 
 module.exports = ServiceContainer
 
-},{"../lib/utils":38,"./transactionService":43,"./zoneService":44}],40:[function(_dereq_,module,exports){
+},{"../lib/utils":34,"./transactionService":39,"./zoneService":40}],36:[function(_dereq_,module,exports){
 var frames = _dereq_('../exceptions/frames')
 var traceCache = _dereq_('./traceCache')
 var utils = _dereq_('../lib/utils')
@@ -5021,14 +4513,14 @@ Trace.prototype.getTraceStackFrames = function (callback) {
 
 module.exports = Trace
 
-},{"../exceptions/frames":31,"../lib/utils":38,"./traceCache":41}],41:[function(_dereq_,module,exports){
+},{"../exceptions/frames":27,"../lib/utils":34,"./traceCache":37}],37:[function(_dereq_,module,exports){
 var SimpleCache = _dereq_('simple-lru-cache')
 
 module.exports = new SimpleCache({
   'maxSize': 5000
 })
 
-},{"simple-lru-cache":16}],42:[function(_dereq_,module,exports){
+},{"simple-lru-cache":14}],38:[function(_dereq_,module,exports){
 var Trace = _dereq_('./trace')
 var utils = _dereq_('../lib/utils')
 
@@ -5046,7 +4538,7 @@ var Transaction = function (name, type, options) {
 
   this.contextInfo = {
     debug: {},
-    browser: {
+    url: {
       location: window.location.href
     }
   }
@@ -5082,6 +4574,10 @@ Transaction.prototype.debugLog = function () {
     messages.unshift(Date.now().toString())
     this.contextInfo.debug.log.push(messages.join(' - '))
   }
+}
+
+Transaction.prototype.setDebugData = function setDebugData (key, value) {
+  this.contextInfo.debug[key] = value
 }
 
 Transaction.prototype.redefine = function (name, type, options) {
@@ -5185,21 +4681,38 @@ Transaction.prototype._finish = function () {
     this.traces.push(eventTrace)
   }
 
-  this._adjustStartToEarliestTrace()
-  this._adjustEndToLatestTrace()
-
   var self = this
-  var whenAllTracesFinished = self.traces.map(function (trace) {
+  var allTraces = Object.keys(self._activeTraces).map(function (key) {
+    return self._activeTraces[key]
+  })
+  allTraces = allTraces.concat(self.traces)
+
+  var whenAllTracesFinished = allTraces.map(function (trace) {
     return trace._isFinish
   })
 
   Promise.all(whenAllTracesFinished).then(function () {
+    self._adjustStartToEarliestTrace()
+    self._adjustEndToLatestTrace()
     self.donePromise._resolve(self)
   })
 }
 
 Transaction.prototype._adjustEndToLatestTrace = function () {
-  var latestTrace = findLatestTrace(this.traces)
+  var latestTrace
+  var rootTrace = this._rootTrace
+  this.traces.forEach(function (trace) {
+    // Excluding rootTrace
+    if (trace === rootTrace) return
+
+    if (!latestTrace) {
+      latestTrace = trace
+    }
+    if (latestTrace && latestTrace._end < trace._end) {
+      latestTrace = trace
+    }
+  })
+
   if (typeof latestTrace !== 'undefined') {
     this._rootTrace._end = latestTrace._end
     this._rootTrace.calcDiff()
@@ -5231,24 +4744,9 @@ function getEarliestTrace (traces) {
   return earliestTrace
 }
 
-function findLatestTrace (traces) {
-  var latestTrace = null
-
-  traces.forEach(function (trace) {
-    if (!latestTrace) {
-      latestTrace = trace
-    }
-    if (latestTrace && latestTrace._end < trace._end) {
-      latestTrace = trace
-    }
-  })
-
-  return latestTrace
-}
-
 module.exports = Transaction
 
-},{"../lib/utils":38,"./trace":40}],43:[function(_dereq_,module,exports){
+},{"../lib/utils":34,"./trace":36}],39:[function(_dereq_,module,exports){
 var Transaction = _dereq_('./transaction')
 var utils = _dereq_('../lib/utils')
 var Subscription = _dereq_('../common/subscription')
@@ -5300,6 +4798,11 @@ function TransactionService (zoneService, logger, config, opbeatBackend) {
   zoneService.spec.onScheduleTask = onScheduleTask
 
   function onInvokeTask (task) {
+    if (task.source === 'XMLHttpRequest.send' && task.trace && !task.trace.ended) {
+      task.trace.end()
+      transactionService.logInTransaction('xhr late ending')
+      transactionService.setDebugDataOnTransaction('xhrLateEnding', true)
+    }
     transactionService.removeTask(task.taskId)
     transactionService.detectFinish()
   }
@@ -5310,6 +4813,16 @@ function TransactionService (zoneService, logger, config, opbeatBackend) {
     transactionService.detectFinish()
   }
   zoneService.spec.onCancelTask = onCancelTask
+  function onInvokeEnd (task) {
+    logger.trace('onInvokeEnd', 'source:', task.source, 'type:', task.type)
+    transactionService.detectFinish()
+  }
+  zoneService.spec.onInvokeEnd = onInvokeEnd
+
+  function onInvokeStart (task) {
+    logger.trace('onInvokeStart', 'source:', task.source, 'type:', task.type)
+  }
+  zoneService.spec.onInvokeStart = onInvokeStart
 }
 
 TransactionService.prototype.getTransaction = function (id) {
@@ -5317,13 +4830,37 @@ TransactionService.prototype.getTransaction = function (id) {
 }
 
 TransactionService.prototype.createTransaction = function (name, type, options) {
-  var tr = new Transaction(name, type, options)
+  var perfOptions = options
+  if (utils.isUndefined(perfOptions)) {
+    perfOptions = this._config.get('performance')
+  }
+  if (!perfOptions.enable || !this._zoneService.isOpbeatZone()) {
+    return
+  }
+
+  var tr = new Transaction(name, type, perfOptions)
   tr.contextInfo.debug.zone = this._zoneService.getCurrentZone().name
   this._zoneService.set('transaction', tr)
-  if (this._config.get('performance.checkBrowserResponsiveness')) {
+  if (perfOptions.checkBrowserResponsiveness) {
     this.startCounter(tr)
   }
   return tr
+}
+
+TransactionService.prototype.createZoneTransaction = function () {
+  return this.createTransaction('ZoneTransaction', 'transaction')
+}
+
+TransactionService.prototype.getCurrentTransaction = function () {
+  var perfOptions = this._config.get('performance')
+  if (!perfOptions.enable || !this._zoneService.isOpbeatZone()) {
+    return
+  }
+  var tr = this._zoneService.get('transaction')
+  if (!utils.isUndefined(tr) && !tr.ended) {
+    return tr
+  }
+  return this.createZoneTransaction()
 }
 
 TransactionService.prototype.startCounter = function (transaction) {
@@ -5344,21 +4881,9 @@ TransactionService.prototype.startCounter = function (transaction) {
   })
 }
 
-TransactionService.prototype.getCurrentTransaction = function () {
-  var tr = this._zoneService.get('transaction')
-  if (!utils.isUndefined(tr) && !tr.ended) {
-    return tr
-  }
-}
-
 TransactionService.prototype.startTransaction = function (name, type) {
   var self = this
-
   var perfOptions = this._config.get('performance')
-  if (!perfOptions.enable || !this._zoneService.isOpbeatZone()) {
-    return
-  }
-
   if (type === 'interaction' && !perfOptions.captureInteractions) {
     return
   }
@@ -5371,12 +4896,12 @@ TransactionService.prototype.startTransaction = function (name, type) {
       this.logInTransaction('Ending early to start a new transaction:', name, type)
       this._logger.debug('Ending old transaction', tr)
       tr.end()
-      tr = this.createTransaction(name, type, perfOptions)
+      tr = this.createTransaction(name, type)
     } else {
       tr.redefine(name, type, perfOptions)
     }
   } else {
-    tr = this.createTransaction(name, type, perfOptions)
+    return
   }
 
   if (this.transactions.indexOf(tr) === -1) {
@@ -5399,24 +4924,13 @@ TransactionService.prototype.startTransaction = function (name, type) {
 }
 
 TransactionService.prototype.startTrace = function (signature, type, options) {
-  var perfOptions = this._config.get('performance')
-  if (!perfOptions.enable || !this._zoneService.isOpbeatZone()) {
-    return
-  }
-
   var trans = this.getCurrentTransaction()
 
   if (trans) {
     this._logger.debug('TransactionService.startTrace', signature, type)
-  } else {
-    trans = this.createTransaction('ZoneTransaction', 'transaction', perfOptions)
-    this._logger.debug('TransactionService.startTrace - ZoneTransaction', signature, type)
+    var trace = trans.startTrace(signature, type, options)
+    return trace
   }
-
-  var trace = trans.startTrace(signature, type, options)
-  // var zone = this._zoneService.getCurrentZone()
-  // trace._zone = 'Zone(' + zone.$id + ') ' // parent(' + zone.parent.$id + ') '
-  return trace
 }
 
 TransactionService.prototype.add = function (transaction) {
@@ -5442,8 +4956,8 @@ TransactionService.prototype.subscribe = function (fn) {
 }
 
 TransactionService.prototype.addTask = function (taskId) {
-  var tr = this._zoneService.get('transaction')
-  if (!utils.isUndefined(tr) && !tr.ended) {
+  var tr = this.getCurrentTransaction()
+  if (tr) {
     tr.addTask(taskId)
     this._logger.debug('TransactionService.addTask', taskId)
   }
@@ -5459,6 +4973,12 @@ TransactionService.prototype.logInTransaction = function () {
   var tr = this._zoneService.get('transaction')
   if (!utils.isUndefined(tr) && !tr.ended) {
     tr.debugLog.apply(tr, arguments)
+  }
+}
+TransactionService.prototype.setDebugDataOnTransaction = function setDebugDataOnTransaction (key, value) {
+  var tr = this._zoneService.get('transaction')
+  if (!utils.isUndefined(tr) && !tr.ended) {
+    tr.setDebugData(key, value)
   }
 }
 
@@ -5489,7 +5009,7 @@ TransactionService.prototype.scheduleTransactionSend = function () {
 
 module.exports = TransactionService
 
-},{"../common/subscription":28,"../lib/utils":38,"./transaction":42}],44:[function(_dereq_,module,exports){
+},{"../common/subscription":24,"../lib/utils":34,"./transaction":38}],40:[function(_dereq_,module,exports){
 var Subscription = _dereq_('../common/subscription')
 var patchUtils = _dereq_('../common/patchUtils')
 var opbeatTaskSymbol = patchUtils.opbeatSymbol('taskData')
@@ -5514,7 +5034,9 @@ function ZoneService (zone, logger, config) {
     onBeforeInvokeTask: noop,
     onInvokeTask: noop,
     onCancelTask: noop,
-    onHandleError: noop
+    onHandleError: noop,
+    onInvokeStart: noop,
+    onInvokeEnd: noop
   }
 
   var zoneConfig = {
@@ -5541,7 +5063,7 @@ function ZoneService (zone, logger, config) {
         }
 
         if (task.source === 'setTimeout') {
-          if (task.data.args[1] === 0) {
+          if (task.data.args[1] === 0 || typeof task.data.args[1] === 'undefined') {
             task[opbeatTaskSymbol] = opbeatTask
             spec.onScheduleTask(opbeatTask)
           }
@@ -5583,7 +5105,14 @@ function ZoneService (zone, logger, config) {
       var delegateTask = parentZoneDelegate.scheduleTask(targetZone, task)
       return delegateTask
     },
+    onInvoke: function (parentZoneDelegate, currentZone, targetZone, delegate, applyThis, applyArgs, source) {
+      spec.onInvokeStart({source: source, type: 'invoke'})
+      var result = delegate.apply(applyThis, applyArgs)
+      spec.onInvokeEnd({source: source, type: 'invoke'})
+      return result
+    },
     onInvokeTask: function (parentZoneDelegate, currentZone, targetZone, task, applyThis, applyArgs) {
+      spec.onInvokeStart({source: task.source, type: task.type})
       logger.trace('zoneservice.onInvokeTask', task.source, ' type:', task.type)
       var hasTarget = task.data && task.data.target
       var result
@@ -5613,6 +5142,7 @@ function ZoneService (zone, logger, config) {
       } else {
         result = parentZoneDelegate.invokeTask(targetZone, task, applyThis, applyArgs)
       }
+      spec.onInvokeEnd({source: task.source, type: task.type})
       return result
     },
     onCancelTask: function (parentZoneDelegate, currentZone, targetZone, task) {
@@ -5679,17 +5209,13 @@ ZoneService.prototype.runOuter = function (fn) {
   return this.outer.run(fn)
 }
 
-ZoneService.prototype.runInOpbeatZone = function runInOpbeatZone (fn, applyThis, applyArgs) {
-  if (this.zone.name === window.Zone.current.name) {
-    return fn.apply(applyThis, applyArgs)
-  } else {
-    return this.zone.run(fn, applyThis, applyArgs)
-  }
+ZoneService.prototype.runInOpbeatZone = function runInOpbeatZone (fn, applyThis, applyArgs, source) {
+  return this.zone.run(fn, applyThis, applyArgs, source || 'runInOpbeatZone:' + fn.name)
 }
 
 module.exports = ZoneService
 
-},{"../common/patchUtils":25,"../common/subscription":28}],45:[function(_dereq_,module,exports){
+},{"../common/patchUtils":21,"../common/subscription":24}],41:[function(_dereq_,module,exports){
 function ZoneServiceMock () {
   function noop () { }
 
