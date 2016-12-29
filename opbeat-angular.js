@@ -2680,6 +2680,16 @@ function OpbeatBackend (transport, logger, config) {
 OpbeatBackend.prototype.sendError = function (errorData) {
   if (this._config.isValid()) {
     errorData.stacktrace.frames = backendUtils.createValidFrames(errorData.stacktrace.frames)
+    if (!errorData.extra.debug) {
+      errorData.extra.debug = {}
+    }
+    var fileErrors = errorData.extra.debug.file_errors = {}
+    errorData.stacktrace.frames.forEach(function (frame) {
+      if (frame.debug && frame.debug.length > 0) {
+        fileErrors[frame.abs_path] = frame.debug.join(' - ')
+        delete frame.debug
+      }
+    })
     var headers = this.getHeaders()
     this._transport.sendError(errorData, headers)
   } else {
@@ -2817,7 +2827,7 @@ OpbeatBackend.prototype.sendTransactions = function (transactionList) {
     })
 
     var filterTransactions = transactionList.filter(function (tr) {
-      if (checkBrowserResponsiveness) {
+      if (checkBrowserResponsiveness && !tr.isHardNavigation) {
         var buffer = opbeatBackend._config.get('performance.browserResponsivenessBuffer')
 
         var duration = tr._rootTrace.duration()
@@ -3116,6 +3126,8 @@ var Config = _dereq_('../lib/config')
 var utils = _dereq_('../lib/utils')
 var transport = _dereq_('../lib/transport')
 var ExceptionHandler = _dereq_('../exceptions/exceptionHandler')
+var StackFrameService = _dereq_('../exceptions/stackFrameService')
+
 var PerformanceServiceContainer = _dereq_('../performance/serviceContainer')
 
 function ServiceFactory () {
@@ -3172,10 +3184,20 @@ ServiceFactory.prototype.getExceptionHandler = function () {
   if (utils.isUndefined(this.services['ExceptionHandler'])) {
     var logger = this.getLogger()
     var configService = this.getConfigService()
-    var exceptionHandler = new ExceptionHandler(this.getOpbeatBackend(), configService, logger)
+    var exceptionHandler = new ExceptionHandler(this.getOpbeatBackend(), configService, logger, this.getStackFrameService())
     this.services['ExceptionHandler'] = exceptionHandler
   }
   return this.services['ExceptionHandler']
+}
+
+ServiceFactory.prototype.getStackFrameService = function () {
+  if (utils.isUndefined(this.services['StackFrameService'])) {
+    var logger = this.getLogger()
+    var configService = this.getConfigService()
+    var stackFrameService = new StackFrameService(configService, logger)
+    this.services['StackFrameService'] = stackFrameService
+  }
+  return this.services['StackFrameService']
 }
 
 ServiceFactory.prototype.getPerformanceServiceContainer = function () {
@@ -3187,7 +3209,7 @@ ServiceFactory.prototype.getPerformanceServiceContainer = function () {
 
 module.exports = ServiceFactory
 
-},{"../backend/opbeat_backend":19,"../exceptions/exceptionHandler":26,"../lib/config":30,"../lib/transport":33,"../lib/utils":34,"../performance/serviceContainer":35,"loglevel":13}],24:[function(_dereq_,module,exports){
+},{"../backend/opbeat_backend":19,"../exceptions/exceptionHandler":26,"../exceptions/stackFrameService":27,"../lib/config":30,"../lib/transport":33,"../lib/utils":34,"../performance/serviceContainer":36,"loglevel":13}],24:[function(_dereq_,module,exports){
 function Subscription () {
   this.subscriptions = []
 }
@@ -3288,7 +3310,7 @@ module.exports = {
 
           // Don't generate contexts if source is minified
           if (isMinified) {
-            return reject()
+            return reject('abort generating contexts, source is minified')
           }
 
           // Pre context
@@ -3381,12 +3403,12 @@ module.exports = {
 
 },{"../lib/fileFetcher":31,"../lib/utils":34}],26:[function(_dereq_,module,exports){
 var stackTrace = _dereq_('./stacktrace')
-var frames = _dereq_('./frames')
 
-var ExceptionHandler = function (opbeatBackend, config, logger) {
+var ExceptionHandler = function (opbeatBackend, config, logger, stackFrameService) {
   this._opbeatBackend = opbeatBackend
   this._config = config
   this._logger = logger
+  this._stackFrameService = stackFrameService
 }
 
 ExceptionHandler.prototype.install = function () {
@@ -3441,20 +3463,20 @@ ExceptionHandler.prototype._processError = function processError (error, msg, fi
   var exceptionHandler = this
   return resolveStackFrames.then(function (stackFrames) {
     exception.stack = stackFrames || []
-    return frames.stackInfoToOpbeatException(exception).then(function (exception) {
-      var data = frames.processOpbeatException(exception, exceptionHandler._config.get('context.user'), exceptionHandler._config.get('context.extra'))
+    return exceptionHandler._stackFrameService.stackInfoToOpbeatException(exception).then(function (exception) {
+      var data = exceptionHandler._stackFrameService.processOpbeatException(exception, exceptionHandler._config.get('context.user'), exceptionHandler._config.get('context.extra'))
       exceptionHandler._opbeatBackend.sendError(data)
     })
   })['catch'](function (error) {
-    exceptionHandler._logger.debug(error)
+    exceptionHandler._logger.warn(error)
   })
 }
 
 module.exports = ExceptionHandler
 
-},{"./frames":27,"./stacktrace":28}],27:[function(_dereq_,module,exports){
-var logger = _dereq_('../lib/logger')
-var config = _dereq_('../lib/config')
+},{"./stacktrace":28}],27:[function(_dereq_,module,exports){
+// var logger = require('../lib/logger')
+// var config = require('../lib/config')
 var utils = _dereq_('../lib/utils')
 var context = _dereq_('./context')
 var stackTrace = _dereq_('./stacktrace')
@@ -3470,220 +3492,225 @@ var promiseSequence = function (tasks) {
   return Promise.all(results)
 }
 
-module.exports = {
-  getFramesForCurrent: function () {
-    return stackTrace.get().then(function (frames) {
-      var tasks = frames.map(function (frame) {
+function StackFrameService (config, logger) {
+  this._logger = logger
+  this._config = config
+}
+
+StackFrameService.prototype.getFramesForCurrent = function getFramesForCurrent () {
+  return stackTrace.get().then(function (frames) {
+    var tasks = frames.map(function (frame) {
+      return this.buildOpbeatFrame.bind(this, frame)
+    }.bind(this))
+
+    var allFrames = promiseSequence(tasks)
+
+    return allFrames.then(function (opbeatFrames) {
+      return opbeatFrames
+    })
+  }.bind(this))
+}
+
+StackFrameService.prototype.buildOpbeatFrame = function buildOpbeatFrame (stack) {
+  return new Promise(function (resolve, reject) {
+    if (!stack.fileName && !stack.lineNumber) {
+      // Probably an stack from IE, return empty frame as we can't use it.
+      return resolve({})
+    }
+
+    if (!stack.columnNumber && !stack.lineNumber) {
+      // We can't use frames with no columnNumber & lineNumber, so ignore for now
+      return resolve({})
+    }
+
+    var filePath = this.cleanFilePath(stack.fileName)
+    var fileName = this.filePathToFileName(filePath)
+
+    if (this.isFileInline(filePath)) {
+      fileName = '(inline script)'
+    }
+
+    // Build Opbeat frame data
+    var frame = {
+      'filename': fileName,
+      'lineno': stack.lineNumber,
+      'colno': stack.columnNumber,
+      'function': stack.functionName || '<anonymous>',
+      'abs_path': stack.fileName,
+      'in_app': this.isFileInApp(filePath),
+      'debug': []
+    }
+
+    // Detect Sourcemaps
+    var sourceMapResolver = context.getFileSourceMapUrl(filePath)
+
+    sourceMapResolver.then(function (sourceMapUrl) {
+      frame.sourcemap_url = sourceMapUrl
+      resolve(frame)
+    }, function (reason) {
+      // // Resolve contexts if no source map
+      var filePath = this.cleanFilePath(stack.fileName)
+      var contextsResolver = context.getExceptionContexts(filePath, stack.lineNumber)
+
+      frame.debug.push(reason)
+      contextsResolver.then(function (contexts) {
+        frame.pre_context = contexts.preContext
+        frame.context_line = contexts.contextLine
+        frame.post_context = contexts.postContext
+        resolve(frame)
+      })['catch'](function (reason) {
+        frame.debug.push(reason)
+        resolve(frame)
+      })
+    }.bind(this))
+  }.bind(this))
+}
+
+StackFrameService.prototype.stackInfoToOpbeatException = function stackInfoToOpbeatException (stackInfo) {
+  return new Promise(function (resolve, reject) {
+    if (stackInfo.stack && stackInfo.stack.length) {
+      var tasks = stackInfo.stack.map(function (frame) {
         return this.buildOpbeatFrame.bind(this, frame)
       }.bind(this))
 
       var allFrames = promiseSequence(tasks)
 
-      return allFrames.then(function (opbeatFrames) {
-        return opbeatFrames
-      })
-    }.bind(this))
-  },
-
-  buildOpbeatFrame: function buildOpbeatFrame (stack) {
-    return new Promise(function (resolve, reject) {
-      if (!stack.fileName && !stack.lineNumber) {
-        // Probably an stack from IE, return empty frame as we can't use it.
-        return resolve({})
-      }
-
-      if (!stack.columnNumber && !stack.lineNumber) {
-        // We can't use frames with no columnNumber & lineNumber, so ignore for now
-        return resolve({})
-      }
-
-      var filePath = this.cleanFilePath(stack.fileName)
-      var fileName = this.filePathToFileName(filePath)
-
-      if (this.isFileInline(filePath)) {
-        fileName = '(inline script)'
-      }
-
-      // Build Opbeat frame data
-      var frame = {
-        'filename': fileName,
-        'lineno': stack.lineNumber,
-        'colno': stack.columnNumber,
-        'function': stack.functionName || '<anonymous>',
-        'abs_path': stack.fileName,
-        'in_app': this.isFileInApp(filePath)
-      }
-
-      // Detect Sourcemaps
-      var sourceMapResolver = context.getFileSourceMapUrl(filePath)
-
-      sourceMapResolver.then(function (sourceMapUrl) {
-        frame.sourcemap_url = sourceMapUrl
-        resolve(frame)
-      }, function () {
-        // // Resolve contexts if no source map
-        var filePath = this.cleanFilePath(stack.fileName)
-        var contextsResolver = context.getExceptionContexts(filePath, stack.lineNumber)
-
-        contextsResolver.then(function (contexts) {
-          frame.pre_context = contexts.preContext
-          frame.context_line = contexts.contextLine
-          frame.post_context = contexts.postContext
-          resolve(frame)
-        })['catch'](function () {
-          resolve(frame)
-        })
-      }.bind(this))
-    }.bind(this))
-  },
-
-  stackInfoToOpbeatException: function (stackInfo) {
-    return new Promise(function (resolve, reject) {
-      if (stackInfo.stack && stackInfo.stack.length) {
-        var tasks = stackInfo.stack.map(function (frame) {
-          return this.buildOpbeatFrame.bind(this, frame)
-        }.bind(this))
-
-        var allFrames = promiseSequence(tasks)
-
-        allFrames.then(function (frames) {
-          stackInfo.frames = frames
-          stackInfo.stack = null
-          resolve(stackInfo)
-        })
-      } else {
+      allFrames.then(function (frames) {
+        stackInfo.frames = frames
+        stackInfo.stack = null
         resolve(stackInfo)
-      }
-    }.bind(this))
-  },
-
-  processOpbeatException: function (exception, userContext, extraContext) {
-    var type = exception.type
-    var message = String(exception.message) || 'Script error'
-    var filePath = this.cleanFilePath(exception.fileurl)
-    var fileName = this.filePathToFileName(filePath)
-    var frames = exception.frames || []
-    var culprit
-
-    if (frames && frames.length) {
-      // Opbeat.com expects frames oldest to newest and JS sends them as newest to oldest
-      frames.reverse()
-    } else if (fileName) {
-      frames.push({
-        filename: fileName,
-        lineno: exception.lineno
       })
-    }
-
-    var stacktrace = {
-      frames: frames
-    }
-
-    // Set fileName from last frame, if filename is missing
-    if (!fileName && frames.length) {
-      var lastFrame = frames[frames.length - 1]
-      if (lastFrame.filename) {
-        fileName = lastFrame.filename
-      } else {
-        // If filename empty, assume inline script
-        fileName = '(inline script)'
-      }
-    }
-
-    if (this.isFileInline(filePath)) {
-      culprit = '(inline script)'
     } else {
-      culprit = fileName
+      resolve(stackInfo)
     }
-
-    var data = {
-      message: type + ': ' + message,
-      culprit: culprit,
-      exception: {
-        type: type,
-        value: message
-      },
-      http: {
-        url: window.location.href
-      },
-      stacktrace: stacktrace,
-      user: userContext || {},
-      level: null,
-      logger: null,
-      machine: null
-    }
-
-    data.extra = this.getBrowserSpecificMetadata()
-
-    if (extraContext) {
-      data.extra = utils.mergeObject(data.extra, extraContext)
-    }
-
-    logger.log('opbeat.exceptions.processOpbeatException', data)
-    return data
-  },
-
-  cleanFilePath: function (filePath) {
-    if (!filePath) {
-      filePath = ''
-    }
-
-    if (filePath === '<anonymous>') {
-      filePath = ''
-    }
-
-    return filePath
-  },
-
-  filePathToFileName: function (fileUrl) {
-    var origin = window.location.origin || window.location.protocol + '//' + window.location.hostname + (window.location.port ? (':' + window.location.port) : '')
-
-    if (fileUrl.indexOf(origin) > -1) {
-      fileUrl = fileUrl.replace(origin + '/', '')
-    }
-
-    return fileUrl
-  },
-
-  isFileInline: function (fileUrl) {
-    if (fileUrl) {
-      return window.location.href.indexOf(fileUrl) === 0
-    } else {
-      return false
-    }
-  },
-
-  isFileInApp: function (filename) {
-    var pattern = config.get('libraryPathPattern')
-    return !RegExp(pattern).test(filename)
-  },
-
-  getBrowserSpecificMetadata: function () {
-    var viewportInfo = utils.getViewPortInfo()
-    var extra = {
-      'environment': {
-        'utcOffset': new Date().getTimezoneOffset() / -60.0,
-        'browserWidth': viewportInfo.width,
-        'browserHeight': viewportInfo.height,
-        'screenWidth': window.screen.width,
-        'screenHeight': window.screen.height,
-        'language': navigator.language,
-        'userAgent': navigator.userAgent,
-        'platform': navigator.platform
-      },
-      'page': {
-        'referer': document.referrer,
-        'host': document.domain,
-        'location': window.location.href
-      }
-    }
-
-    return extra
-  }
-
+  }.bind(this))
 }
 
-},{"../lib/config":30,"../lib/logger":32,"../lib/utils":34,"./context":25,"./stacktrace":28}],28:[function(_dereq_,module,exports){
+StackFrameService.prototype.processOpbeatException = function (exception, userContext, extraContext) {
+  var type = exception.type
+  var message = String(exception.message) || 'Script error'
+  var filePath = this.cleanFilePath(exception.fileurl)
+  var fileName = this.filePathToFileName(filePath)
+  var frames = exception.frames || []
+  var culprit
+
+  if (frames && frames.length) {
+    // Opbeat.com expects frames oldest to newest and JS sends them as newest to oldest
+    frames.reverse()
+  } else if (fileName) {
+    frames.push({
+      filename: fileName,
+      lineno: exception.lineno
+    })
+  }
+
+  var stacktrace = {
+    frames: frames
+  }
+
+  // Set fileName from last frame, if filename is missing
+  if (!fileName && frames.length) {
+    var lastFrame = frames[frames.length - 1]
+    if (lastFrame.filename) {
+      fileName = lastFrame.filename
+    } else {
+      // If filename empty, assume inline script
+      fileName = '(inline script)'
+    }
+  }
+
+  if (this.isFileInline(filePath)) {
+    culprit = '(inline script)'
+  } else {
+    culprit = fileName
+  }
+
+  var data = {
+    message: type + ': ' + message,
+    culprit: culprit,
+    exception: {
+      type: type,
+      value: message
+    },
+    http: {
+      url: window.location.href
+    },
+    stacktrace: stacktrace,
+    user: userContext || {},
+    level: null,
+    logger: null,
+    machine: null
+  }
+
+  data.extra = this.getBrowserSpecificMetadata()
+
+  if (extraContext) {
+    data.extra = utils.mergeObject(data.extra, extraContext)
+  }
+
+  this._logger.debug('opbeat.exceptions.processOpbeatException', data)
+  return data
+}
+StackFrameService.prototype.cleanFilePath = function (filePath) {
+  if (!filePath) {
+    filePath = ''
+  }
+
+  if (filePath === '<anonymous>') {
+    filePath = ''
+  }
+
+  return filePath
+}
+
+StackFrameService.prototype.filePathToFileName = function (fileUrl) {
+  var origin = window.location.origin || window.location.protocol + '//' + window.location.hostname + (window.location.port ? (':' + window.location.port) : '')
+
+  if (fileUrl.indexOf(origin) > -1) {
+    fileUrl = fileUrl.replace(origin + '/', '')
+  }
+
+  return fileUrl
+}
+
+StackFrameService.prototype.isFileInline = function (fileUrl) {
+  if (fileUrl) {
+    return window.location.href.indexOf(fileUrl) === 0
+  } else {
+    return false
+  }
+}
+StackFrameService.prototype.isFileInApp = function (filename) {
+  var pattern = this._config.get('libraryPathPattern')
+  return !RegExp(pattern).test(filename)
+}
+
+StackFrameService.prototype.getBrowserSpecificMetadata = function () {
+  var viewportInfo = utils.getViewPortInfo()
+  var extra = {
+    'environment': {
+      'utcOffset': new Date().getTimezoneOffset() / -60.0,
+      'browserWidth': viewportInfo.width,
+      'browserHeight': viewportInfo.height,
+      'screenWidth': window.screen.width,
+      'screenHeight': window.screen.height,
+      'language': navigator.language,
+      'userAgent': navigator.userAgent,
+      'platform': navigator.platform
+    },
+    'page': {
+      'referer': document.referrer,
+      'host': document.domain,
+      'location': window.location.href
+    }
+  }
+
+  return extra
+}
+
+module.exports = StackFrameService
+
+},{"../lib/utils":34,"./context":25,"./stacktrace":28}],28:[function(_dereq_,module,exports){
 var ErrorStackParser = _dereq_('error-stack-parser')
 var StackGenerator = _dereq_('stack-generator')
 var utils = _dereq_('../lib/utils')
@@ -3806,7 +3833,7 @@ module.exports['utils'] = _dereq_('./lib/utils')
 var test = module.exports['test'] = {}
 test.ZoneServiceMock = _dereq_('../test/performance/zoneServiceMock')
 
-},{"../test/performance/zoneServiceMock":41,"./common/patchCommon":20,"./common/patchUtils":21,"./common/serviceFactory":23,"./common/subscription":24,"./lib/config":30,"./lib/utils":34,"./performance/serviceContainer":35,"./performance/transactionService":39}],30:[function(_dereq_,module,exports){
+},{"../test/performance/zoneServiceMock":41,"./common/patchCommon":20,"./common/patchUtils":21,"./common/serviceFactory":23,"./common/subscription":24,"./lib/config":30,"./lib/utils":34,"./performance/serviceContainer":36,"./performance/transactionService":39}],30:[function(_dereq_,module,exports){
 var utils = _dereq_('./utils')
 var Subscription = _dereq_('../common/subscription')
 
@@ -3814,7 +3841,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.7.0',
+    VERSION: 'v3.8.0',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -3832,7 +3859,8 @@ function Config () {
       similarTraceThreshold: 0.05,
       captureInteractions: false,
       sendVerboseDebugInfo: false,
-      includeXHRQueryString: false
+      includeXHRQueryString: false,
+      capturePageLoad: false
     },
     libraryPathPattern: '(node_modules|bower_components|webpack)',
     context: {},
@@ -3930,7 +3958,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.7.0'
+Config.prototype.VERSION = 'v3.8.0'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
@@ -4347,6 +4375,71 @@ function isFunction (value) {
 }
 
 },{}],35:[function(_dereq_,module,exports){
+var Trace = _dereq_('./trace')
+
+var eventPairs = [
+  ['domainLookupStart', 'domainLookupEnd', 'DNS lookup'],
+  ['connectStart', 'connectEnd', 'Connect'],
+  ['requestStart', 'responseStart', 'Sending and waiting for first byte'],
+  ['responseStart', 'responseEnd', 'Downloading'],
+  ['domLoading', 'domInteractive', 'Fetching, parsing and sync. execution'],
+  ['domContentLoadedEventStart', 'domContentLoadedEventEnd', '"DOMContentLoaded" event handling'],
+  ['loadEventStart', 'loadEventEnd', '"load" event handling']
+]
+
+module.exports = function captureHardNavigation (transaction) {
+  if (transaction.isHardNavigation && window.performance && window.performance.timing) {
+    var baseTime = window.performance.timing.navigationStart
+    var timings = window.performance.timing
+
+    transaction._rootTrace._start = transaction._start = 0
+    transaction.type = 'page-load'
+    transaction.name += ' (initial page load)' // temporary until we support transaction types
+    for (var i = 0; i < eventPairs.length; i++) {
+      // var transactionStart = eventPairs[0]
+      var start = timings[eventPairs[i][0]]
+      var end = timings[eventPairs[i][1]]
+      if (start && end && end - start !== 0) {
+        var trace = new Trace(transaction, eventPairs[i][2], 'hard-navigation.browser-timing')
+        trace._start = timings[eventPairs[i][0]] - baseTime
+        trace.ended = true
+        trace.setParent(transaction._rootTrace)
+        trace.end()
+        trace._end = timings[eventPairs[i][1]] - baseTime
+        trace.calcDiff()
+      }
+    }
+
+    if (window.performance.getEntriesByType) {
+      var entries = window.performance.getEntriesByType('resource')
+      for (i = 0; i < entries.length; i++) {
+        var entry = entries[i]
+        if (entry.initiatorType && entry.initiatorType === 'xmlhttprequest') {
+          continue
+        } else {
+          var kind = 'resource'
+          if (entry.initiatorType) {
+            kind += '.' + entry.initiatorType
+          }
+
+          trace = new Trace(transaction, entry.name, kind)
+          trace._start = entry.startTime
+          trace.ended = true
+          trace.setParent(transaction._rootTrace)
+          trace.end()
+          trace._end = entry.responseEnd
+          trace.calcDiff()
+        }
+      }
+    }
+
+    transaction._adjustStartToEarliestTrace()
+    transaction._adjustEndToLatestTrace()
+  }
+  return 0
+}
+
+},{"./trace":37}],36:[function(_dereq_,module,exports){
 var TransactionService = _dereq_('./transactionService')
 var ZoneService = _dereq_('./zoneService')
 var utils = _dereq_('../lib/utils')
@@ -4393,9 +4486,7 @@ ServiceContainer.prototype.createZoneService = function () {
 
 module.exports = ServiceContainer
 
-},{"../lib/utils":34,"./transactionService":39,"./zoneService":40}],36:[function(_dereq_,module,exports){
-var frames = _dereq_('../exceptions/frames')
-var traceCache = _dereq_('./traceCache')
+},{"../lib/utils":34,"./transactionService":39,"./zoneService":40}],37:[function(_dereq_,module,exports){
 var utils = _dereq_('../lib/utils')
 
 function Trace (transaction, signature, type, options) {
@@ -4449,7 +4540,7 @@ Trace.prototype.end = function () {
 }
 
 Trace.prototype.duration = function () {
-  if (!this.ended || !this._start) {
+  if (utils.isUndefined(this.ended) || utils.isUndefined(this._start)) {
     return null
   }
   this._diff = this._end - this._start
@@ -4497,30 +4588,13 @@ Trace.prototype.getFingerprint = function () {
 
 Trace.prototype.getTraceStackFrames = function (callback) {
   // Use callbacks instead of Promises to keep the stack
-  var key = this.getFingerprint()
-  var traceFrames = traceCache.get(key)
-  if (traceFrames) {
-    callback(traceFrames)
-  } else {
-    frames.getFramesForCurrent().then(function (traceFrames) {
-      traceCache.set(key, traceFrames)
-      callback(traceFrames)
-    })['catch'](function () {
-      callback(null)
-    })
-  }
+  // should use stacktrace.js to get stackframes raw data synchronously
+  callback()
 }
 
 module.exports = Trace
 
-},{"../exceptions/frames":27,"../lib/utils":34,"./traceCache":37}],37:[function(_dereq_,module,exports){
-var SimpleCache = _dereq_('simple-lru-cache')
-
-module.exports = new SimpleCache({
-  'maxSize': 5000
-})
-
-},{"simple-lru-cache":14}],38:[function(_dereq_,module,exports){
+},{"../lib/utils":34}],38:[function(_dereq_,module,exports){
 var Trace = _dereq_('./trace')
 var utils = _dereq_('../lib/utils')
 
@@ -4566,6 +4640,8 @@ var Transaction = function (name, type, options) {
 
   this.duration = this._rootTrace.duration.bind(this._rootTrace)
   this.nextId = 0
+
+  this.isHardNavigation = false
 }
 
 Transaction.prototype.debugLog = function () {
@@ -4746,10 +4822,12 @@ function getEarliestTrace (traces) {
 
 module.exports = Transaction
 
-},{"../lib/utils":34,"./trace":36}],39:[function(_dereq_,module,exports){
+},{"../lib/utils":34,"./trace":37}],39:[function(_dereq_,module,exports){
 var Transaction = _dereq_('./transaction')
 var utils = _dereq_('../lib/utils')
 var Subscription = _dereq_('../common/subscription')
+
+var captureHardNavigation = _dereq_('./captureHardNavigation')
 
 function TransactionService (zoneService, logger, config, opbeatBackend) {
   this._config = config
@@ -4771,6 +4849,7 @@ function TransactionService (zoneService, logger, config, opbeatBackend) {
   this._subscription = new Subscription()
 
   var transactionService = this
+  this._alreadyCapturedPageLoad = false
 
   function onBeforeInvokeTask (task) {
     if (task.source === 'XMLHttpRequest.send' && task.trace && !task.trace.ended) {
@@ -4909,6 +4988,13 @@ TransactionService.prototype.startTransaction = function (name, type) {
     var p = tr.donePromise
     p.then(function (t) {
       self._logger.debug('TransactionService transaction finished', tr)
+      var capturePageLoad = self._config.get('performance.capturePageLoad')
+      if (capturePageLoad && !self._alreadyCapturedPageLoad) {
+        tr.isHardNavigation = true
+        captureHardNavigation(tr)
+        self._alreadyCapturedPageLoad = true
+      }
+
       self.add(tr)
       self._subscription.applyAll(self, [tr])
 
@@ -5009,7 +5095,7 @@ TransactionService.prototype.scheduleTransactionSend = function () {
 
 module.exports = TransactionService
 
-},{"../common/subscription":24,"../lib/utils":34,"./transaction":38}],40:[function(_dereq_,module,exports){
+},{"../common/subscription":24,"../lib/utils":34,"./captureHardNavigation":35,"./transaction":38}],40:[function(_dereq_,module,exports){
 var Subscription = _dereq_('../common/subscription')
 var patchUtils = _dereq_('../common/patchUtils')
 var opbeatTaskSymbol = patchUtils.opbeatSymbol('taskData')
