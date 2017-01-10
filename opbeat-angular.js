@@ -1581,6 +1581,7 @@ function groupTraces (traces) {
 
     return {
       transaction: trace.transaction.name,
+      transaction_kind: trace.transaction.type,
       signature: trace.signature,
       kind: trace.type,
       timestamp: trace.transaction._startStamp.toISOString(),
@@ -2462,7 +2463,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.8.1',
+    VERSION: 'v3.8.2',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -2579,7 +2580,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.8.1'
+Config.prototype.VERSION = 'v3.8.2'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
