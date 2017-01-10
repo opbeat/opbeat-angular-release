@@ -2463,7 +2463,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.8.2',
+    VERSION: 'v3.8.3',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -2580,7 +2580,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.8.2'
+Config.prototype.VERSION = 'v3.8.3'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
@@ -3017,6 +3017,7 @@ module.exports = function captureHardNavigation (transaction) {
     transaction._rootTrace._start = transaction._start = 0
     transaction.type = 'page-load'
     transaction.name += ' (initial page load)' // temporary until we support transaction types
+    var traceThreshold = 5 * 60 * 1000 // 5 minutes
     for (var i = 0; i < eventPairs.length; i++) {
       // var transactionStart = eventPairs[0]
       var start = timings[eventPairs[i][0]]
@@ -3029,6 +3030,10 @@ module.exports = function captureHardNavigation (transaction) {
         trace.end()
         trace._end = timings[eventPairs[i][1]] - baseTime
         trace.calcDiff()
+        var d = trace.duration()
+        if (d > traceThreshold || d < 0) {
+          transaction.traces.splice(transaction.traces.indexOf(trace), 1)
+        }
       }
     }
 
