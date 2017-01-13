@@ -309,8 +309,6 @@ function createAngular (opbeatBootstrap) {
   })
 }
 
-function noop () {}
-
 function patchAll (opbeatBootstrap) {
   var weDeferred = patchDeferredBootstrap(opbeatBootstrap)
   patchMainBootstrap(opbeatBootstrap, weDeferred)
@@ -2509,7 +2507,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.9.0',
+    VERSION: 'v3.9.1',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -2626,7 +2624,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.9.0'
+Config.prototype.VERSION = 'v3.9.1'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
