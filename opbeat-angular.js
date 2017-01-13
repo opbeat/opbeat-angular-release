@@ -21,14 +21,23 @@ function initialize (serviceFactory) {
     }
   }
 
+  function noop () {}
+  services['angularInitializer'] = {
+    afterBootstrap: noop
+  }
+
+  function afterBootstrap () {
+    services['angularInitializer'].afterBootstrap()
+  }
+
   services.exceptionHandler = serviceFactory.getExceptionHandler()
   services.exceptionHandler.install()
   alreadyRegistered = registerOpbeatModule(services)
-  patchAngularBootstrap(services.zoneService, beforeBootstrap)
+  patchAngularBootstrap(services.zoneService, beforeBootstrap, afterBootstrap)
 }
 
 function registerOpbeatModule (services) {
-  return ngOpbeat(services.transactionService, services.logger, services.configService, services.exceptionHandler)
+  return ngOpbeat(services)
 }
 
 module.exports = initialize
@@ -98,7 +107,20 @@ function patchAll ($provide, transactionService) {
 
 function noop () {}
 
-function registerOpbeatModule (transactionService, logger, configService, exceptionHandler) {
+function registerOpbeatModule (services) {
+  var transactionService = services.transactionService
+  var logger = services.logger
+  var configService = services.configService
+  var exceptionHandler = services.exceptionHandler
+  var angularInitializer = services.angularInitializer
+
+  var routeChanged = false
+  angularInitializer.afterBootstrap = function afterBootstrap () {
+    if (!routeChanged) {
+      transactionService.sendPageLoadMetrics(window.location.pathname)
+    }
+  }
+
   function moduleRun ($rootScope) {
     configService.set('isInstalled', true)
     configService.set('opbeatAgentName', 'opbeat-angular')
@@ -113,6 +135,7 @@ function registerOpbeatModule (transactionService, logger, configService, except
 
     // onRouteChangeStart
     function onRouteChangeStart (event, current) {
+      routeChanged = true
       if (!configService.get('performance.enable')) {
         logger.debug('Performance monitoring is disable')
         return
@@ -194,18 +217,17 @@ init()
 var DEFER_LABEL = 'NG_DEFER_BOOTSTRAP!'
 var deferRegex = new RegExp('^' + DEFER_LABEL + '.*')
 
-function patchMainBootstrap (zoneService, beforeBootstrap, weDeferred) {
+function patchMainBootstrap (opbeatBootstrap, weDeferred) {
   if (typeof window.angular === 'undefined') {
     return
   }
   var originalBootstrapFn = window.angular.bootstrap
 
   function bootstrap (element, modules) {
-    beforeBootstrap(modules)
     if (weDeferred && deferRegex.test(window.name)) {
       window.name = window.name.substring(DEFER_LABEL.length)
     }
-    return zoneService.runInOpbeatZone(originalBootstrapFn, window.angular, arguments, 'angular:bootstrap')
+    return opbeatBootstrap(originalBootstrapFn, window.angular, arguments)
   }
 
   Object.defineProperty(window.angular, 'bootstrap', {
@@ -222,7 +244,7 @@ function patchMainBootstrap (zoneService, beforeBootstrap, weDeferred) {
   })
 }
 
-function patchDeferredBootstrap (zoneService, beforeBootstrap) {
+function patchDeferredBootstrap (opbeatBootstrap) {
   if (typeof window.angular === 'undefined') {
     return
   }
@@ -234,8 +256,7 @@ function patchDeferredBootstrap (zoneService, beforeBootstrap) {
       get: function () {
         if (typeof originalResumeBootstrap === 'function') {
           return function (modules) {
-            beforeBootstrap(modules)
-            return zoneService.runInOpbeatZone(originalResumeBootstrap, window.angular, arguments, 'angular:bootstrap')
+            return opbeatBootstrap(originalResumeBootstrap, window.angular, arguments)
           }
         } else {
           return originalResumeBootstrap
@@ -252,8 +273,7 @@ function patchDeferredBootstrap (zoneService, beforeBootstrap) {
 
     window.angular.resumeDeferredBootstrap = function () {
       var modules = []
-      beforeBootstrap(modules)
-      return zoneService.runInOpbeatZone(window.angular.resumeBootstrap, window.angular, [modules], 'angular:bootstrap')
+      return opbeatBootstrap(window.angular.resumeBootstrap, window.angular, [modules])
     }
     /* angular should remove DEFER_LABEL from window.name, but if angular is never loaded, we want
      to remove it ourselves */
@@ -267,7 +287,7 @@ function patchDeferredBootstrap (zoneService, beforeBootstrap) {
   }
 }
 
-function createAngular (zoneService, beforeBootstrap) {
+function createAngular (opbeatBootstrap) {
   // with this method we can initialize opbeat-angular before or after angular is loaded
   var alreadyPatched = false
   var originalAngular = window.angular
@@ -281,7 +301,7 @@ function createAngular (zoneService, beforeBootstrap) {
       originalAngular = value
       if (!alreadyPatched && typeof originalAngular === 'object') {
         alreadyPatched = true
-        patchAll(zoneService, beforeBootstrap)
+        patchAll(opbeatBootstrap)
       }
     },
     enumerable: true,
@@ -291,20 +311,27 @@ function createAngular (zoneService, beforeBootstrap) {
 
 function noop () {}
 
-function patchAll (zoneService, beforeBootstrap) {
-  var weDeferred = patchDeferredBootstrap(zoneService, beforeBootstrap)
-  patchMainBootstrap(zoneService, beforeBootstrap, weDeferred)
+function patchAll (opbeatBootstrap) {
+  var weDeferred = patchDeferredBootstrap(opbeatBootstrap)
+  patchMainBootstrap(opbeatBootstrap, weDeferred)
 }
 
-function patchAngularBootstrap (zoneService, beforeBootstrap) {
-  if (typeof beforeBootstrap !== 'function') {
-    beforeBootstrap = noop
+function patchAngularBootstrap (zoneService, beforeBootstrap, afterBootstrap) {
+  function opbeatBootstrap (fn, applyThis, applyArgs) {
+    if (typeof beforeBootstrap === 'function') {
+      beforeBootstrap()
+    }
+    var result = zoneService.runInOpbeatZone(fn, applyThis, applyArgs, 'angular:bootstrap')
+    if (typeof afterBootstrap === 'function') {
+      afterBootstrap()
+    }
+    return result
   }
 
   if (window.angular) {
-    patchAll(zoneService, beforeBootstrap)
+    patchAll(opbeatBootstrap)
   } else {
-    createAngular(zoneService, beforeBootstrap)
+    createAngular(opbeatBootstrap)
   }
 }
 
@@ -2053,12 +2080,15 @@ ExceptionHandler.prototype._processError = function processError (error, msg, fi
     return
   }
 
+  var extraContext = error ? getProperties(error) : undefined // error ? error['_opbeat_extra_context'] : undefined
+
   var exception = {
     'message': error ? error.message : msg,
     'type': error ? error.name : null,
     'fileurl': file || null,
     'lineno': line || null,
-    'colno': col || null
+    'colno': col || null,
+    'extra': extraContext
   }
 
   if (!exception.type) {
@@ -2092,6 +2122,25 @@ ExceptionHandler.prototype._processError = function processError (error, msg, fi
   })['catch'](function (error) {
     exceptionHandler._logger.warn(error)
   })
+}
+
+function getProperties (err) {
+  var properties = {}
+  Object.keys(err).forEach(function (key) {
+    if (key === 'stack') return
+    var val = err[key]
+    if (val === null) return // null is typeof object and well break the switch below
+    switch (typeof val) {
+      case 'function':
+        return
+      case 'object':
+        // ignore all objects except Dates
+        if (typeof val.toISOString !== 'function') return
+        val = val.toISOString()
+    }
+    properties[key] = val
+  })
+  return properties
 }
 
 module.exports = ExceptionHandler
@@ -2264,11 +2313,8 @@ StackFrameService.prototype.processOpbeatException = function (exception, userCo
     machine: null
   }
 
-  data.extra = this.getBrowserSpecificMetadata()
-
-  if (extraContext) {
-    data.extra = utils.mergeObject(data.extra, extraContext)
-  }
+  var browserMetadata = this.getBrowserSpecificMetadata()
+  data.extra = utils.merge({}, browserMetadata, extraContext, exception.extra)
 
   this._logger.debug('opbeat.exceptions.processOpbeatException', data)
   return data
@@ -2463,7 +2509,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.8.3',
+    VERSION: 'v3.9.0',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -2580,7 +2626,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.8.3'
+Config.prototype.VERSION = 'v3.9.0'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
@@ -3587,6 +3633,32 @@ TransactionService.prototype.startCounter = function (transaction) {
   })
 }
 
+TransactionService.prototype.sendPageLoadMetrics = function (name) {
+  var self = this
+  var perfOptions = this._config.get('performance')
+  var tr = new Transaction(name, 'page-load', perfOptions)
+
+  tr.donePromise.then(function () {
+    var captured = self.capturePageLoadMetrics(tr)
+    if (captured) {
+      self.add(tr)
+      self._subscription.applyAll(self, [tr])
+    }
+  })
+  tr.detectFinish()
+}
+
+TransactionService.prototype.capturePageLoadMetrics = function (tr) {
+  var self = this
+  var capturePageLoad = self._config.get('performance.capturePageLoad')
+  if (capturePageLoad && !self._alreadyCapturedPageLoad) {
+    tr.isHardNavigation = true
+    captureHardNavigation(tr)
+    self._alreadyCapturedPageLoad = true
+    return true
+  }
+}
+
 TransactionService.prototype.startTransaction = function (name, type) {
   var self = this
   var perfOptions = this._config.get('performance')
@@ -3615,12 +3687,7 @@ TransactionService.prototype.startTransaction = function (name, type) {
     var p = tr.donePromise
     p.then(function (t) {
       self._logger.debug('TransactionService transaction finished', tr)
-      var capturePageLoad = self._config.get('performance.capturePageLoad')
-      if (capturePageLoad && !self._alreadyCapturedPageLoad) {
-        tr.isHardNavigation = true
-        captureHardNavigation(tr)
-        self._alreadyCapturedPageLoad = true
-      }
+      self.capturePageLoadMetrics(tr)
 
       self.add(tr)
       self._subscription.applyAll(self, [tr])
