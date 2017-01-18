@@ -1326,16 +1326,20 @@ function OpbeatBackend (transport, logger, config) {
 OpbeatBackend.prototype.sendError = function (errorData) {
   if (this._config.isValid()) {
     errorData.stacktrace.frames = backendUtils.createValidFrames(errorData.stacktrace.frames)
-    if (!errorData.extra.debug) {
-      errorData.extra.debug = {}
-    }
-    var fileErrors = errorData.extra.debug.file_errors = {}
+    var fileErrors = {}
     errorData.stacktrace.frames.forEach(function (frame) {
       if (frame.debug && frame.debug.length > 0) {
         fileErrors[frame.abs_path] = frame.debug.join(' - ')
         delete frame.debug
       }
     })
+    if (Object.keys(fileErrors).length > 0) {
+      if (!errorData.extra.debug) {
+        errorData.extra.debug = {}
+      }
+      errorData.extra.debug.file_errors = fileErrors
+    }
+
     var headers = this.getHeaders()
     this._transport.sendError(errorData, headers)
   } else {
@@ -2050,6 +2054,7 @@ module.exports = {
 
 },{"../lib/fileFetcher":30,"../lib/utils":33}],25:[function(_dereq_,module,exports){
 var stackTrace = _dereq_('./stacktrace')
+var utils = _dereq_('../lib/utils')
 
 var ExceptionHandler = function (opbeatBackend, config, logger, stackFrameService) {
   this._opbeatBackend = opbeatBackend
@@ -2060,7 +2065,12 @@ var ExceptionHandler = function (opbeatBackend, config, logger, stackFrameServic
 
 ExceptionHandler.prototype.install = function () {
   window.onerror = function (msg, file, line, col, error) {
-    this._processError(error, msg, file, line, col)
+    var options = {
+      eventObject: {
+        msg: msg, file: file, line: line, col: col
+      }
+    }
+    this._processError(error, options)
   }.bind(this)
 }
 
@@ -2068,17 +2078,25 @@ ExceptionHandler.prototype.uninstall = function () {
   window.onerror = null
 }
 
-ExceptionHandler.prototype.processError = function (err) {
-  return this._processError(err)
+ExceptionHandler.prototype.processError = function (err, options) {
+  return this._processError(err, options)
 }
 
-ExceptionHandler.prototype._processError = function processError (error, msg, file, line, col) {
+ExceptionHandler.prototype._processError = function processError (error, options) {
+  var eo = options && options.eventObject || {}
+  var msg = eo.msg
+  var file = eo.file
+  var line = eo.line
+  var col = eo.col
   if (msg === 'Script error.' && !file) {
     // ignoring script errors: See https://github.com/getsentry/raven-js/issues/41
     return
   }
 
   var extraContext = error ? getProperties(error) : undefined // error ? error['_opbeat_extra_context'] : undefined
+  if (options && options.extra) {
+    extraContext = utils.merge({}, extraContext, options.extra)
+  }
 
   var exception = {
     'message': error ? error.message : msg,
@@ -2143,7 +2161,7 @@ function getProperties (err) {
 
 module.exports = ExceptionHandler
 
-},{"./stacktrace":27}],26:[function(_dereq_,module,exports){
+},{"../lib/utils":33,"./stacktrace":27}],26:[function(_dereq_,module,exports){
 // var logger = require('../lib/logger')
 // var config = require('../lib/config')
 var utils = _dereq_('../lib/utils')
@@ -2507,7 +2525,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.9.1',
+    VERSION: 'v3.10.0',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -2624,7 +2642,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.9.1'
+Config.prototype.VERSION = 'v3.10.0'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
@@ -3060,7 +3078,6 @@ module.exports = function captureHardNavigation (transaction) {
 
     transaction._rootTrace._start = transaction._start = 0
     transaction.type = 'page-load'
-    transaction.name += ' (initial page load)' // temporary until we support transaction types
     var traceThreshold = 5 * 60 * 1000 // 5 minutes
     for (var i = 0; i < eventPairs.length; i++) {
       // var transactionStart = eventPairs[0]
