@@ -15,15 +15,17 @@ function initialize (serviceFactory) {
   var alreadyRegistered = false
   patchCommon(serviceContainer)
 
+  function noop () {}
+  services['angularInitializer'] = {
+    afterBootstrap: noop,
+    beforeBootstrap: noop
+  }
+
   function beforeBootstrap (modules) {
+    services['angularInitializer'].beforeBootstrap()
     if (!alreadyRegistered) {
       alreadyRegistered = registerOpbeatModule(services)
     }
-  }
-
-  function noop () {}
-  services['angularInitializer'] = {
-    afterBootstrap: noop
   }
 
   function afterBootstrap () {
@@ -115,7 +117,11 @@ function registerOpbeatModule (services) {
   var angularInitializer = services.angularInitializer
 
   var routeChanged = false
+  angularInitializer.beforeBootstrap = function beforeBootstrap () {
+    transactionService.metrics['appBeforeBootstrap'] = performance.now()
+  }
   angularInitializer.afterBootstrap = function afterBootstrap () {
+    transactionService.metrics['appAfterBootstrap'] = performance.now()
     if (!routeChanged) {
       transactionService.sendPageLoadMetrics(window.location.pathname)
     }
@@ -2525,7 +2531,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.10.0',
+    VERSION: 'v3.11.0',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -2642,7 +2648,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.10.0'
+Config.prototype.VERSION = 'v3.11.0'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
@@ -3071,6 +3077,16 @@ var eventPairs = [
   ['loadEventStart', 'loadEventEnd', '"load" event handling']
 ]
 
+var navigationTimingKeys = [
+  'navigationStart', 'unloadEventStart', 'unloadEventEnd', 'redirectStart', 'redirectEnd', 'fetchStart', 'domainLookupStart', 'domainLookupEnd', 'connectStart',
+  'connectEnd', 'secureConnectionStart', 'requestStart', 'responseStart', 'responseEnd', 'domLoading', 'domInteractive', 'domContentLoadedEventStart', 'domContentLoadedEventEnd', 'domComplete', 'loadEventStart', 'loadEventEnd']
+
+var traceThreshold = 5 * 60 * 1000 // 5 minutes
+function isValidTrace (transaction, trace) {
+  var d = trace.duration()
+  return (d < traceThreshold && d > 0 && trace._start <= transaction._rootTrace._end && trace._end <= transaction._rootTrace._end)
+}
+
 module.exports = function captureHardNavigation (transaction) {
   if (transaction.isHardNavigation && window.performance && window.performance.timing) {
     var baseTime = window.performance.timing.navigationStart
@@ -3078,7 +3094,6 @@ module.exports = function captureHardNavigation (transaction) {
 
     transaction._rootTrace._start = transaction._start = 0
     transaction.type = 'page-load'
-    var traceThreshold = 5 * 60 * 1000 // 5 minutes
     for (var i = 0; i < eventPairs.length; i++) {
       // var transactionStart = eventPairs[0]
       var start = timings[eventPairs[i][0]]
@@ -3091,8 +3106,7 @@ module.exports = function captureHardNavigation (transaction) {
         trace.end()
         trace._end = timings[eventPairs[i][1]] - baseTime
         trace.calcDiff()
-        var d = trace.duration()
-        if (d > traceThreshold || d < 0) {
+        if (!isValidTrace(transaction, trace)) {
           transaction.traces.splice(transaction.traces.indexOf(trace), 1)
         }
       }
@@ -3117,12 +3131,25 @@ module.exports = function captureHardNavigation (transaction) {
           trace.end()
           trace._end = entry.responseEnd
           trace.calcDiff()
+          if (!isValidTrace(transaction, trace)) {
+            transaction.traces.splice(transaction.traces.indexOf(trace), 1)
+          }
         }
       }
     }
-
     transaction._adjustStartToEarliestTrace()
     transaction._adjustEndToLatestTrace()
+
+    var metrics = {
+      timeToComplete: transaction._rootTrace._end
+    }
+    navigationTimingKeys.forEach(function (timingKey) {
+      var m = timings[timingKey]
+      if (m) {
+        metrics[timingKey] = m - baseTime
+      }
+    })
+    transaction.addMetrics(metrics)
   }
   return 0
 }
@@ -3300,6 +3327,7 @@ var Transaction = function (name, type, options) {
 
   this.contextInfo = {
     debug: {},
+    _metrics: {},
     url: {
       location: window.location.href
     }
@@ -3338,6 +3366,10 @@ Transaction.prototype.debugLog = function () {
     messages.unshift(Date.now().toString())
     this.contextInfo.debug.log.push(messages.join(' - '))
   }
+}
+
+Transaction.prototype.addMetrics = function (obj) {
+  this.contextInfo._metrics = utils.merge(this.contextInfo._metrics, obj)
 }
 
 Transaction.prototype.setDebugData = function setDebugData (key, value) {
@@ -3531,6 +3563,7 @@ function TransactionService (zoneService, logger, config, opbeatBackend) {
   this.nextId = 1
 
   this.taskMap = {}
+  this.metrics = {}
 
   this._queue = []
 
@@ -3661,12 +3694,14 @@ TransactionService.prototype.sendPageLoadMetrics = function (name) {
     }
   })
   tr.detectFinish()
+  return tr
 }
 
 TransactionService.prototype.capturePageLoadMetrics = function (tr) {
   var self = this
   var capturePageLoad = self._config.get('performance.capturePageLoad')
   if (capturePageLoad && !self._alreadyCapturedPageLoad) {
+    tr.addMetrics(self.metrics)
     tr.isHardNavigation = true
     captureHardNavigation(tr)
     self._alreadyCapturedPageLoad = true
