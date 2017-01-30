@@ -117,16 +117,6 @@ function registerOpbeatModule (services) {
   var angularInitializer = services.angularInitializer
 
   var routeChanged = false
-  angularInitializer.beforeBootstrap = function beforeBootstrap () {
-    transactionService.metrics['appBeforeBootstrap'] = performance.now()
-  }
-  angularInitializer.afterBootstrap = function afterBootstrap () {
-    transactionService.metrics['appAfterBootstrap'] = performance.now()
-    if (!routeChanged) {
-      transactionService.sendPageLoadMetrics(window.location.pathname)
-    }
-  }
-
   function moduleRun ($rootScope) {
     configService.set('isInstalled', true)
     configService.set('opbeatAgentName', 'opbeat-angular')
@@ -195,6 +185,16 @@ function registerOpbeatModule (services) {
         .provider('$opbeat', new NgOpbeatProvider(logger, configService, exceptionHandler))
         .config(['$provide', moduleConfig])
         .run(['$rootScope', moduleRun])
+
+      angularInitializer.beforeBootstrap = function beforeBootstrap () {
+        transactionService.metrics['appBeforeBootstrap'] = performance.now()
+      }
+      angularInitializer.afterBootstrap = function afterBootstrap () {
+        transactionService.metrics['appAfterBootstrap'] = performance.now()
+        if (!routeChanged) {
+          transactionService.sendPageLoadMetrics(window.location.pathname)
+        }
+      }
     }
     window.angular.module('opbeat-angular', ['ngOpbeat'])
     return true
@@ -1424,7 +1424,7 @@ OpbeatBackend.prototype.setTransactionContextInfo = function setTransactionConte
 
   var context = opbeatBackend._config.get('context')
   if (context) {
-    transaction.contextInfo = utils.merge(transaction.contextInfo || {}, context)
+    transaction.addContextInfo(context)
   }
 
   var ctx = transaction.contextInfo
@@ -1449,18 +1449,16 @@ OpbeatBackend.prototype.setTransactionContextInfo = function setTransactionConte
       }
     }
   }
-  if (!ctx.system) {
-    ctx.system = {}
-  }
-  ctx.system.opbeat = opbeatBackend._config.getAgentName()
 
-  if (!ctx.debug) {
-    ctx.debug = {}
-  }
+  transaction.addContextInfo({
+    system: {
+      agent: opbeatBackend._config.getAgentName()
+    }
+  })
 
   if (checkBrowserResponsiveness) {
-    ctx.debug.browserResponsivenessCounter = transaction.browserResponsivenessCounter
-    ctx.debug.browserResponsivenessInterval = browserResponsivenessInterval
+    transaction.setDebugData('browserResponsivenessCounter', transaction.browserResponsivenessCounter)
+    transaction.setDebugData('browserResponsivenessInterval', browserResponsivenessInterval)
   }
 }
 
@@ -2531,7 +2529,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.11.0',
+    VERSION: 'v3.12.0',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -2648,7 +2646,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.11.0'
+Config.prototype.VERSION = 'v3.12.0'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
@@ -3089,7 +3087,7 @@ function isValidTrace (transaction, trace) {
 
 module.exports = function captureHardNavigation (transaction) {
   if (transaction.isHardNavigation && window.performance && window.performance.timing) {
-    var baseTime = window.performance.timing.navigationStart
+    var baseTime = window.performance.timing.fetchStart
     var timings = window.performance.timing
 
     transaction._rootTrace._start = transaction._start = 0
@@ -3326,14 +3324,14 @@ var Transaction = function (name, type, options) {
   }
 
   this.contextInfo = {
-    debug: {},
+    _debug: {},
     _metrics: {},
     url: {
       location: window.location.href
     }
   }
   if (this._options.sendVerboseDebugInfo) {
-    this.contextInfo.debug.log = []
+    this.contextInfo._debug.log = []
     this.debugLog('Transaction', name, type)
   }
 
@@ -3364,16 +3362,20 @@ Transaction.prototype.debugLog = function () {
   if (this._options.sendVerboseDebugInfo) {
     var messages = (arguments.length === 1 ? [arguments[0]] : Array.apply(null, arguments))
     messages.unshift(Date.now().toString())
-    this.contextInfo.debug.log.push(messages.join(' - '))
+    this.contextInfo._debug.log.push(messages.join(' - '))
   }
+}
+
+Transaction.prototype.addContextInfo = function (obj) {
+  utils.merge(this.contextInfo, obj)
+}
+
+Transaction.prototype.setDebugData = function setDebugData (key, value) {
+  this.contextInfo._debug[key] = value
 }
 
 Transaction.prototype.addMetrics = function (obj) {
   this.contextInfo._metrics = utils.merge(this.contextInfo._metrics, obj)
-}
-
-Transaction.prototype.setDebugData = function setDebugData (key, value) {
-  this.contextInfo.debug[key] = value
 }
 
 Transaction.prototype.redefine = function (name, type, options) {
@@ -3444,7 +3446,7 @@ Transaction.prototype.addTask = function (taskId) {
 
 Transaction.prototype.removeTask = function (taskId) {
   this.debugLog('removeTask', taskId)
-  this.contextInfo.debug.lastRemovedTask = taskId
+  this.setDebugData('lastRemovedTask', taskId)
   delete this._scheduledTasks[taskId]
 }
 
@@ -3639,7 +3641,7 @@ TransactionService.prototype.createTransaction = function (name, type, options) 
   }
 
   var tr = new Transaction(name, type, perfOptions)
-  tr.contextInfo.debug.zone = this._zoneService.getCurrentZone().name
+  tr.setDebugData('zone', this._zoneService.getCurrentZone().name)
   this._zoneService.set('transaction', tr)
   if (perfOptions.checkBrowserResponsiveness) {
     this.startCounter(tr)
@@ -3684,7 +3686,15 @@ TransactionService.prototype.startCounter = function (transaction) {
 TransactionService.prototype.sendPageLoadMetrics = function (name) {
   var self = this
   var perfOptions = this._config.get('performance')
-  var tr = new Transaction(name, 'page-load', perfOptions)
+  var tr
+
+  tr = this._zoneService.getFromOpbeatZone('transaction')
+
+  if (tr) {
+    tr.redefine(name, 'page-load', perfOptions)
+  } else {
+    tr = new Transaction(name, 'page-load', perfOptions)
+  }
 
   tr.donePromise.then(function () {
     var captured = self.capturePageLoadMetrics(tr)
@@ -4027,6 +4037,13 @@ ZoneService.prototype.get = function (key) {
   return window.Zone.current.get(key)
 }
 
+ZoneService.prototype.getFromOpbeatZone = function (key) {
+  return this.zone.get(key)
+}
+ZoneService.prototype.setOnOpbeatZone = function (key, value) {
+  this.zone._properties[key] = value
+}
+
 ZoneService.prototype.getCurrentZone = function () {
   return window.Zone.current
 }
@@ -4061,6 +4078,9 @@ function ZoneServiceMock () {
   }
   this.set = function (key, value) {
     this.zone[key] = value
+  }
+  this.getFromOpbeatZone = function (key) {
+    return this.get(key)
   }
   this.runOuter = function (fn) {
     return fn()
