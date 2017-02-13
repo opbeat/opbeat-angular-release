@@ -44,7 +44,7 @@ function registerOpbeatModule (services) {
 
 module.exports = initialize
 
-},{"./ngOpbeat":2,"./patches/bootstrapPatch":4,"opbeat-js-core":28}],2:[function(_dereq_,module,exports){
+},{"./ngOpbeat":2,"./patches/bootstrapPatch":4,"opbeat-js-core":25}],2:[function(_dereq_,module,exports){
 var patchController = _dereq_('./patches/controllerPatch')
 var patchCompile = _dereq_('./patches/compilePatch')
 var patchRootScope = _dereq_('./patches/rootScopePatch')
@@ -219,7 +219,7 @@ function init () {
 
 init()
 
-},{"./angularInitializer":1,"opbeat-js-core":28,"zone.js":41}],4:[function(_dereq_,module,exports){
+},{"./angularInitializer":1,"opbeat-js-core":25,"zone.js":37}],4:[function(_dereq_,module,exports){
 var DEFER_LABEL = 'NG_DEFER_BOOTSTRAP!'
 var deferRegex = new RegExp('^' + DEFER_LABEL + '.*')
 
@@ -370,7 +370,7 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{"opbeat-js-core":28}],6:[function(_dereq_,module,exports){
+},{"opbeat-js-core":25}],6:[function(_dereq_,module,exports){
 var utils = _dereq_('opbeat-js-core').utils
 
 function getControllerInfoFromArgs (args) {
@@ -420,7 +420,7 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{"opbeat-js-core":28}],7:[function(_dereq_,module,exports){
+},{"opbeat-js-core":25}],7:[function(_dereq_,module,exports){
 var utils = _dereq_('opbeat-js-core').utils
 module.exports = function ($provide, transactionService) {
   'use strict'
@@ -482,7 +482,7 @@ function humanReadableWatchExpression (fn) {
   return fn.toString()
 }
 
-},{"opbeat-js-core":28}],8:[function(_dereq_,module,exports){
+},{"opbeat-js-core":25}],8:[function(_dereq_,module,exports){
 
 module.exports = function patchExceptionHandler ($provide) {
   $provide.decorator('$exceptionHandler', ['$delegate', '$opbeat', function $ExceptionHandlerDecorator ($delegate, $opbeat) {
@@ -768,7 +768,7 @@ function decorateRootScope ($delegate, transactionService) {
 
 
 }).call(this,undefined)
-},{"stackframe":16}],12:[function(_dereq_,module,exports){
+},{"stackframe":14}],12:[function(_dereq_,module,exports){
 (function (define){
 /*
 * loglevel - https://github.com/pimterry/loglevel
@@ -996,157 +996,6 @@ function decorateRootScope ($delegate, transactionService) {
 
 }).call(this,undefined)
 },{}],13:[function(_dereq_,module,exports){
-module.exports = _dereq_('./lib/simple_lru.js');
-
-},{"./lib/simple_lru.js":14}],14:[function(_dereq_,module,exports){
-"use strict";
-
-/**
- * LRU cache based on a double linked list
- */
-
-function ListElement(before,next,key,value){
-    this.before = before
-    this.next = next
-    this.key = key
-    this.value = value
-}
-
-ListElement.prototype.setKey = function(key){
-    this.key = key
-}
-
-ListElement.prototype.setValue = function(value){
-    this.value = value
-}
-
-
-function Cache(options){
-    if(!options)
-        options = {}
-    this.maxSize = options.maxSize 
-    this.reset()
-}
-
-
-Cache.prototype.reset = function(){
-    this.size = 0   
-    this.cache = {}
-    this.tail = undefined
-    this.head = undefined
-}
-
-
-Cache.prototype.get = function(key,hit){
-    var cacheVal = this.cache[key]
-    /*
-     * Define if the egt function should hit the value to move
-     * it to the head of linked list  
-     */
-    hit = hit != undefined && hit != null ? hit : true;
-    if(cacheVal && hit)
-        this.hit(cacheVal)
-    else
-        return undefined
-    return cacheVal.value
-}
-
-Cache.prototype.set = function(key,val,hit){
-    var actual = this.cache[key]
-    /*
-     * Define if the set function should hit the value to move
-     * it to the head of linked list  
-     */
-     hit = hit != undefined && hit != null ? hit : true;
-    
-    
-    if(actual){
-        actual.value = val
-        if(hit) this.hit(actual)
-    }else{
-        var cacheVal
-        if(this.size >= this.maxSize){
-            var tailKey = this.tail.key 
-            this.detach(this.tail)
-            
-            /*
-             * If max is reached we'llreuse object to minimize GC impact 
-             * when the objects are cached short time
-             */
-            cacheVal = this.cache[tailKey]
-            delete this.cache[tailKey]
-
-            cacheVal.next = undefined
-            cacheVal.before = undefined
-            
-            /*
-             * setters reuse the array object 
-             */
-            cacheVal.setKey(key)
-            cacheVal.setValue(val)
-        }
-
-        cacheVal = cacheVal ? cacheVal : new ListElement(undefined,undefined,key,val)
-        this.cache[key] = cacheVal
-        this.attach(cacheVal)
-    }
-}
-
-Cache.prototype.del = function(key){
-    var val = this.cache[key]
-    if(!val)
-        return;
-    this.detach(val)
-    delete this.cache[key]
-}
-
-Cache.prototype.hit = function(cacheVal){
-    //Send cacheVal to the head of list
-    this.detach(cacheVal)
-    this.attach(cacheVal)
-}
-
-Cache.prototype.attach = function(element){
-    if(!element)
-        return;
-    element.before = undefined
-    element.next = this.head
-    this.head = element
-    if(!element.next)
-       this.tail = element
-    else
-        element.next.before = element
-    this.size++ 
-}
-
-Cache.prototype.detach = function(element){
-    if(!element)
-        return;
-    var before = element.before
-    var next = element.next
-    if(before){
-        before.next = next
-    }else{
-        this.head = next
-    }
-    if(next){
-        next.before = before
-    }else{
-        this.tail = before
-    }
-    this.size--
-}
-
-Cache.prototype.forEach = function(callback){
-    var self = this
-    Object.keys(this.cache).forEach(function(key){
-        var val = self.cache[key]
-        callback(val.value,key)
-    })
-}
-module.exports=Cache
-
-},{}],15:[function(_dereq_,module,exports){
 (function (define){
 (function (root, factory) {
     'use strict';
@@ -1195,7 +1044,7 @@ module.exports=Cache
 }));
 
 }).call(this,undefined)
-},{"stackframe":16}],16:[function(_dereq_,module,exports){
+},{"stackframe":14}],14:[function(_dereq_,module,exports){
 (function (define){
 (function (root, factory) {
     'use strict';
@@ -1306,7 +1155,7 @@ module.exports=Cache
 }));
 
 }).call(this,undefined)
-},{}],17:[function(_dereq_,module,exports){
+},{}],15:[function(_dereq_,module,exports){
 module.exports = {
   createValidFrames: function createValidFrames (frames) {
     var result = []
@@ -1319,7 +1168,7 @@ module.exports = {
   }
 }
 
-},{}],18:[function(_dereq_,module,exports){
+},{}],16:[function(_dereq_,module,exports){
 var backendUtils = _dereq_('./backend_utils')
 var utils = _dereq_('../lib/utils')
 
@@ -1498,6 +1347,10 @@ OpbeatBackend.prototype.sendTransactions = function (transactionList) {
       var formatedTransactions = this._formatTransactions(filterTransactions)
       var headers = this.getHeaders()
       return this._transport.sendTransaction(formatedTransactions, headers)
+        .then(undefined, function (reason) {
+          opbeatBackend._logger.warn('Failed sending transactions!', reason)
+          return Promise.reject(reason)
+        })
     }
   } else {
     this._logger.debug('Config is not valid')
@@ -1671,7 +1524,7 @@ function traceGroupingKey (trace) {
   ].join('-')
 }
 
-},{"../lib/utils":33,"./backend_utils":17}],19:[function(_dereq_,module,exports){
+},{"../lib/utils":29,"./backend_utils":15}],17:[function(_dereq_,module,exports){
 var patchXMLHttpRequest = _dereq_('./patches/xhrPatch')
 
 function patchCommon (serviceContainer) {
@@ -1680,7 +1533,7 @@ function patchCommon (serviceContainer) {
 
 module.exports = patchCommon
 
-},{"./patches/xhrPatch":21}],20:[function(_dereq_,module,exports){
+},{"./patches/xhrPatch":19}],18:[function(_dereq_,module,exports){
 module.exports = {
   patchFunction: function patchModule (delegate, options) {},
   _copyProperties: function _copyProperties (source, target) {
@@ -1755,7 +1608,7 @@ function createNamedFn (name, delegate) {
   }
 }
 
-},{}],21:[function(_dereq_,module,exports){
+},{}],19:[function(_dereq_,module,exports){
 var patchUtils = _dereq_('../patchUtils')
 
 var urlSympbol = patchUtils.opbeatSymbol('url')
@@ -1773,7 +1626,7 @@ module.exports = function patchXMLHttpRequest () {
   })
 }
 
-},{"../patchUtils":20}],22:[function(_dereq_,module,exports){
+},{"../patchUtils":18}],20:[function(_dereq_,module,exports){
 var OpbeatBackend = _dereq_('../backend/opbeat_backend')
 var Logger = _dereq_('loglevel')
 var Config = _dereq_('../lib/config')
@@ -1864,7 +1717,7 @@ ServiceFactory.prototype.getPerformanceServiceContainer = function () {
 
 module.exports = ServiceFactory
 
-},{"../backend/opbeat_backend":18,"../exceptions/exceptionHandler":25,"../exceptions/stackFrameService":26,"../lib/config":29,"../lib/transport":32,"../lib/utils":33,"../performance/serviceContainer":35,"loglevel":12}],23:[function(_dereq_,module,exports){
+},{"../backend/opbeat_backend":16,"../exceptions/exceptionHandler":22,"../exceptions/stackFrameService":23,"../lib/config":26,"../lib/transport":28,"../lib/utils":29,"../performance/serviceContainer":31,"loglevel":12}],21:[function(_dereq_,module,exports){
 function Subscription () {
   this.subscriptions = []
 }
@@ -1893,170 +1746,7 @@ Subscription.prototype.applyAll = function (applyTo, applyWith) {
 
 module.exports = Subscription
 
-},{}],24:[function(_dereq_,module,exports){
-var utils = _dereq_('../lib/utils')
-var fileFetcher = _dereq_('../lib/fileFetcher')
-
-module.exports = {
-
-  _findSourceMappingURL: function (source) {
-    var m = /\/\/[#@] ?sourceMappingURL=([^\s'"]+)[\s]*$/.exec(source)
-    if (m && m[1]) {
-      return m[1]
-    }
-    return null
-  },
-
-  getFileSourceMapUrl: function (fileUrl) {
-    var self = this
-    var fileBasePath
-
-    if (!fileUrl) {
-      return Promise.reject('no fileUrl')
-    }
-
-    if (fileUrl.split('/').length > 1) {
-      fileBasePath = fileUrl.split('/').slice(0, -1).join('/') + '/'
-    } else {
-      fileBasePath = '/'
-    }
-
-    return new Promise(function (resolve, reject) {
-      fileFetcher.getFile(fileUrl).then(function (source) {
-        var sourceMapUrl = self._findSourceMappingURL(source)
-        if (sourceMapUrl) {
-          sourceMapUrl = fileBasePath + sourceMapUrl
-          resolve(sourceMapUrl)
-        } else {
-          reject('no sourceMapUrl')
-        }
-      }, reject)
-    })
-  },
-
-  getExceptionContexts: function (url, line) {
-    if (!url || !line) {
-      return Promise.reject('no line or url')
-    }
-
-    return new Promise(function (resolve, reject) {
-      fileFetcher.getFile(url).then(function (source) {
-        line -= 1 // convert line to 0-based index
-
-        var sourceLines = source.split('\n')
-        var linesBefore = 5
-        var linesAfter = 5
-
-        var contexts = {
-          preContext: [],
-          contextLine: null,
-          postContext: []
-        }
-
-        if (sourceLines.length) {
-          var isMinified
-
-          // Treat HTML files as non-minified
-          if (source.indexOf('<html') > -1) {
-            isMinified = false
-          } else {
-            isMinified = this.isSourceMinified(source)
-          }
-
-          // Don't generate contexts if source is minified
-          if (isMinified) {
-            return reject('abort generating contexts, source is minified')
-          }
-
-          // Pre context
-          var preStartIndex = Math.max(0, line - linesBefore - 1)
-          var preEndIndex = Math.min(sourceLines.length, line - 1)
-          for (var i = preStartIndex; i <= preEndIndex; ++i) {
-            if (!utils.isUndefined(sourceLines[i])) {
-              contexts.preContext.push(sourceLines[i])
-            }
-          }
-
-          // Line context
-          contexts.contextLine = sourceLines[line]
-
-          // Post context
-          var postStartIndex = Math.min(sourceLines.length, line + 1)
-          var postEndIndex = Math.min(sourceLines.length, line + linesAfter)
-          for (var j = postStartIndex; j <= postEndIndex; ++j) {
-            if (!utils.isUndefined(sourceLines[j])) {
-              contexts.postContext.push(sourceLines[j])
-            }
-          }
-        }
-
-        var charLimit = 1000
-        // Circuit breaker for huge file contexts
-        if (contexts.contextLine.length > charLimit) {
-          reject('aborting generating contexts, as line is over 1000 chars')
-        }
-
-        contexts.preContext.forEach(function (line) {
-          if (line.length > charLimit) {
-            reject('aborting generating contexts, as preContext line is over 1000 chars')
-          }
-        })
-
-        contexts.postContext.forEach(function (line) {
-          if (line.length > charLimit) {
-            reject('aborting generating contexts, as postContext line is over 1000 chars')
-          }
-        })
-
-        resolve(contexts)
-      }.bind(this), reject)
-    }.bind(this))
-  },
-
-  isSourceMinified: function (source) {
-    // Source: https://dxr.mozilla.org/mozilla-central/source/devtools/client/debugger/utils.js#62
-    var SAMPLE_SIZE = 50 // no of lines
-    var INDENT_COUNT_THRESHOLD = 5 // percentage
-    var CHARACTER_LIMIT = 250 // line character limit
-
-    var isMinified
-    var lineEndIndex = 0
-    var lineStartIndex = 0
-    var lines = 0
-    var indentCount = 0
-    var overCharLimit = false
-
-    if (!source) {
-      return false
-    }
-
-    // Strip comments.
-    source = source.replace(/\/\*[\S\s]*?\*\/|\/\/(.+|\n)/g, '')
-
-    while (lines++ < SAMPLE_SIZE) {
-      lineEndIndex = source.indexOf('\n', lineStartIndex)
-      if (lineEndIndex === -1) {
-        break
-      }
-      if (/^\s+/.test(source.slice(lineStartIndex, lineEndIndex))) {
-        indentCount++
-      }
-      // For files with no indents but are not minified.
-      if ((lineEndIndex - lineStartIndex) > CHARACTER_LIMIT) {
-        overCharLimit = true
-        break
-      }
-      lineStartIndex = lineEndIndex + 1
-    }
-
-    isMinified = ((indentCount / lines) * 100) < INDENT_COUNT_THRESHOLD || overCharLimit
-
-    return isMinified
-  }
-
-}
-
-},{"../lib/fileFetcher":30,"../lib/utils":33}],25:[function(_dereq_,module,exports){
+},{}],22:[function(_dereq_,module,exports){
 var stackTrace = _dereq_('./stacktrace')
 var utils = _dereq_('../lib/utils')
 
@@ -2165,11 +1855,8 @@ function getProperties (err) {
 
 module.exports = ExceptionHandler
 
-},{"../lib/utils":33,"./stacktrace":27}],26:[function(_dereq_,module,exports){
-// var logger = require('../lib/logger')
-// var config = require('../lib/config')
+},{"../lib/utils":29,"./stacktrace":24}],23:[function(_dereq_,module,exports){
 var utils = _dereq_('../lib/utils')
-var context = _dereq_('./context')
 var stackTrace = _dereq_('./stacktrace')
 
 var promiseSequence = function (tasks) {
@@ -2232,28 +1919,7 @@ StackFrameService.prototype.buildOpbeatFrame = function buildOpbeatFrame (stack)
       'debug': []
     }
 
-    // Detect Sourcemaps
-    var sourceMapResolver = context.getFileSourceMapUrl(filePath)
-
-    sourceMapResolver.then(function (sourceMapUrl) {
-      frame.sourcemap_url = sourceMapUrl
-      resolve(frame)
-    }, function (reason) {
-      // // Resolve contexts if no source map
-      var filePath = this.cleanFilePath(stack.fileName)
-      var contextsResolver = context.getExceptionContexts(filePath, stack.lineNumber)
-
-      frame.debug.push(reason)
-      contextsResolver.then(function (contexts) {
-        frame.pre_context = contexts.preContext
-        frame.context_line = contexts.contextLine
-        frame.post_context = contexts.postContext
-        resolve(frame)
-      })['catch'](function (reason) {
-        frame.debug.push(reason)
-        resolve(frame)
-      })
-    }.bind(this))
+    resolve(frame)
   }.bind(this))
 }
 
@@ -2398,7 +2064,7 @@ StackFrameService.prototype.getBrowserSpecificMetadata = function () {
 
 module.exports = StackFrameService
 
-},{"../lib/utils":33,"./context":24,"./stacktrace":27}],27:[function(_dereq_,module,exports){
+},{"../lib/utils":29,"./stacktrace":24}],24:[function(_dereq_,module,exports){
 var ErrorStackParser = _dereq_('error-stack-parser')
 var StackGenerator = _dereq_('stack-generator')
 var utils = _dereq_('../lib/utils')
@@ -2505,7 +2171,7 @@ function normalizeFunctionName (fnName) {
   return fnName
 }
 
-},{"../lib/utils":33,"error-stack-parser":11,"stack-generator":15}],28:[function(_dereq_,module,exports){
+},{"../lib/utils":29,"error-stack-parser":11,"stack-generator":13}],25:[function(_dereq_,module,exports){
 // export public core APIs.
 
 module.exports['ServiceFactory'] = _dereq_('./common/serviceFactory')
@@ -2521,7 +2187,7 @@ module.exports['utils'] = _dereq_('./lib/utils')
 var test = module.exports['test'] = {}
 test.ZoneServiceMock = _dereq_('../test/performance/zoneServiceMock')
 
-},{"../test/performance/zoneServiceMock":40,"./common/patchCommon":19,"./common/patchUtils":20,"./common/serviceFactory":22,"./common/subscription":23,"./lib/config":29,"./lib/utils":33,"./performance/serviceContainer":35,"./performance/transactionService":38}],29:[function(_dereq_,module,exports){
+},{"../test/performance/zoneServiceMock":36,"./common/patchCommon":17,"./common/patchUtils":18,"./common/serviceFactory":20,"./common/subscription":21,"./lib/config":26,"./lib/utils":29,"./performance/serviceContainer":31,"./performance/transactionService":34}],26:[function(_dereq_,module,exports){
 var utils = _dereq_('./utils')
 var Subscription = _dereq_('../common/subscription')
 
@@ -2529,7 +2195,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.12.0',
+    VERSION: 'v3.13.0',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -2548,7 +2214,7 @@ function Config () {
       captureInteractions: false,
       sendVerboseDebugInfo: false,
       includeXHRQueryString: false,
-      capturePageLoad: false
+      capturePageLoad: true
     },
     libraryPathPattern: '(node_modules|bower_components|webpack)',
     context: {},
@@ -2646,7 +2312,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.12.0'
+Config.prototype.VERSION = 'v3.13.0'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
@@ -2659,27 +2325,7 @@ Config.prototype.isPlatformSupported = function () {
 
 module.exports = new Config()
 
-},{"../common/subscription":23,"./utils":33}],30:[function(_dereq_,module,exports){
-var SimpleCache = _dereq_('simple-lru-cache')
-var transport = _dereq_('./transport')
-
-var cache = new SimpleCache({
-  'maxSize': 1000
-})
-
-module.exports = {
-  getFile: function (url) {
-    var cachedPromise = cache.get(url)
-    if (typeof cachedPromise !== 'undefined') {
-      return cachedPromise
-    }
-    var filePromise = transport.getFile(url)
-    cache.set(url, filePromise)
-    return filePromise
-  }
-}
-
-},{"./transport":32,"simple-lru-cache":13}],31:[function(_dereq_,module,exports){
+},{"../common/subscription":21,"./utils":29}],27:[function(_dereq_,module,exports){
 var config = _dereq_('./config')
 
 var logStack = []
@@ -2722,7 +2368,7 @@ module.exports = {
   }
 }
 
-},{"./config":29}],32:[function(_dereq_,module,exports){
+},{"./config":26}],28:[function(_dereq_,module,exports){
 var logger = _dereq_('./logger')
 var config = _dereq_('./config')
 
@@ -2796,7 +2442,7 @@ function _makeRequest (url, method, type, data, headers) {
   })
 }
 
-},{"./config":29,"./logger":31}],33:[function(_dereq_,module,exports){
+},{"./config":26,"./logger":27}],29:[function(_dereq_,module,exports){
 var slice = [].slice
 
 module.exports = {
@@ -3062,7 +2708,7 @@ function isFunction (value) {
   return typeof value === 'function'
 }
 
-},{}],34:[function(_dereq_,module,exports){
+},{}],30:[function(_dereq_,module,exports){
 var Trace = _dereq_('./trace')
 
 var eventPairs = [
@@ -3152,7 +2798,7 @@ module.exports = function captureHardNavigation (transaction) {
   return 0
 }
 
-},{"./trace":36}],35:[function(_dereq_,module,exports){
+},{"./trace":32}],31:[function(_dereq_,module,exports){
 var TransactionService = _dereq_('./transactionService')
 var ZoneService = _dereq_('./zoneService')
 var utils = _dereq_('../lib/utils')
@@ -3199,7 +2845,7 @@ ServiceContainer.prototype.createZoneService = function () {
 
 module.exports = ServiceContainer
 
-},{"../lib/utils":33,"./transactionService":38,"./zoneService":39}],36:[function(_dereq_,module,exports){
+},{"../lib/utils":29,"./transactionService":34,"./zoneService":35}],32:[function(_dereq_,module,exports){
 var utils = _dereq_('../lib/utils')
 
 function Trace (transaction, signature, type, options) {
@@ -3307,7 +2953,7 @@ Trace.prototype.getTraceStackFrames = function (callback) {
 
 module.exports = Trace
 
-},{"../lib/utils":33}],37:[function(_dereq_,module,exports){
+},{"../lib/utils":29}],33:[function(_dereq_,module,exports){
 var Trace = _dereq_('./trace')
 var utils = _dereq_('../lib/utils')
 
@@ -3325,10 +2971,7 @@ var Transaction = function (name, type, options) {
 
   this.contextInfo = {
     _debug: {},
-    _metrics: {},
-    url: {
-      location: window.location.href
-    }
+    _metrics: {}
   }
   if (this._options.sendVerboseDebugInfo) {
     this.contextInfo._debug.log = []
@@ -3430,6 +3073,12 @@ Transaction.prototype.end = function () {
   }
   this.debugLog('end')
   this.ended = true
+
+  this.addContextInfo({
+    url: {
+      location: window.location.href
+    }
+  })
   this._rootTrace.end()
 
   if (this.isFinished() === true) {
@@ -3544,7 +3193,7 @@ function getEarliestTrace (traces) {
 
 module.exports = Transaction
 
-},{"../lib/utils":33,"./trace":36}],38:[function(_dereq_,module,exports){
+},{"../lib/utils":29,"./trace":32}],34:[function(_dereq_,module,exports){
 var Transaction = _dereq_('./transaction')
 var utils = _dereq_('../lib/utils')
 var Subscription = _dereq_('../common/subscription')
@@ -3849,7 +3498,7 @@ TransactionService.prototype.scheduleTransactionSend = function () {
 
 module.exports = TransactionService
 
-},{"../common/subscription":23,"../lib/utils":33,"./captureHardNavigation":34,"./transaction":37}],39:[function(_dereq_,module,exports){
+},{"../common/subscription":21,"../lib/utils":29,"./captureHardNavigation":30,"./transaction":33}],35:[function(_dereq_,module,exports){
 var Subscription = _dereq_('../common/subscription')
 var patchUtils = _dereq_('../common/patchUtils')
 var opbeatTaskSymbol = patchUtils.opbeatSymbol('taskData')
@@ -4062,7 +3711,7 @@ ZoneService.prototype.runInOpbeatZone = function runInOpbeatZone (fn, applyThis,
 
 module.exports = ZoneService
 
-},{"../common/patchUtils":20,"../common/subscription":23}],40:[function(_dereq_,module,exports){
+},{"../common/patchUtils":18,"../common/subscription":21}],36:[function(_dereq_,module,exports){
 function ZoneServiceMock () {
   function noop () { }
 
@@ -4103,7 +3752,7 @@ function ZoneServiceMock () {
 }
 module.exports = ZoneServiceMock
 
-},{}],41:[function(_dereq_,module,exports){
+},{}],37:[function(_dereq_,module,exports){
 (function (process){
 /******/ (function(modules) { // webpackBootstrap
 /******/ 	// The module cache
