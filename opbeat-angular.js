@@ -52,6 +52,8 @@ var patchDirectives = _dereq_('./patches/directivesPatch')
 var patchExceptionHandler = _dereq_('./patches/exceptionHandlerPatch')
 var patchInteractions = _dereq_('./patches/interactionsPatch')
 
+var utils = _dereq_('opbeat-js-core').utils
+
 function NgOpbeatProvider (logger, configService, exceptionHandler) {
   this.config = function config (properties) {
     if (properties) {
@@ -105,6 +107,11 @@ function patchAll ($provide, transactionService) {
   patchRootScope($provide, transactionService)
   patchDirectives($provide, transactionService)
   patchInteractions($provide, transactionService)
+}
+
+function publishExternalApi (spec) {
+  var opbeat = window.opbeat || (window.opbeat = {})
+  utils.extend(opbeat, spec)
 }
 
 function noop () {}
@@ -174,6 +181,12 @@ function registerOpbeatModule (services) {
     }
   }
 
+  publishExternalApi({
+    'setInitialPageLoadName': function setInitialPageLoadName (name) {
+      transactionService.initialPageLoadName = name
+    }
+  })
+
   if (window.angular && typeof window.angular.module === 'function') {
     if (!configService.isPlatformSupported()) {
       window.angular.module('ngOpbeat', [])
@@ -192,7 +205,7 @@ function registerOpbeatModule (services) {
       angularInitializer.afterBootstrap = function afterBootstrap () {
         transactionService.metrics['appAfterBootstrap'] = performance.now()
         if (!routeChanged) {
-          transactionService.sendPageLoadMetrics(window.location.pathname)
+          transactionService.sendPageLoadMetrics()
         }
       }
     }
@@ -203,7 +216,7 @@ function registerOpbeatModule (services) {
 
 module.exports = registerOpbeatModule
 
-},{"./patches/compilePatch":5,"./patches/controllerPatch":6,"./patches/directivesPatch":7,"./patches/exceptionHandlerPatch":8,"./patches/interactionsPatch":9,"./patches/rootScopePatch":10}],3:[function(_dereq_,module,exports){
+},{"./patches/compilePatch":5,"./patches/controllerPatch":6,"./patches/directivesPatch":7,"./patches/exceptionHandlerPatch":8,"./patches/interactionsPatch":9,"./patches/rootScopePatch":10,"opbeat-js-core":25}],3:[function(_dereq_,module,exports){
 var opbeatCore = _dereq_('opbeat-js-core')
 var ServiceFactory = opbeatCore.ServiceFactory
 var angularInitializer = _dereq_('./angularInitializer')
@@ -2195,7 +2208,7 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.13.0',
+    VERSION: 'v3.14.0',
     apiHost: 'intake.opbeat.com',
     isInstalled: false,
     debug: false,
@@ -2312,7 +2325,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.13.0'
+Config.prototype.VERSION = 'v3.14.0'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
@@ -2651,13 +2664,21 @@ module.exports = {
     var xhr = new window.XMLHttpRequest()
     return 'withCredentials' in xhr
   },
+  getOpbeatScript: function () {
+    var scripts = document.getElementsByTagName('script')
+    for (var i = 0, l = scripts.length; i < l; i++) {
+      var sc = scripts[i]
+      if (sc.src.indexOf('opbeat') > 0) {
+        return sc
+      }
+    }
+  },
 
   getCurrentScript: function () {
     // Source http://www.2ality.com/2014/05/current-script.html
     var currentScript = document.currentScript
     if (!currentScript) {
-      var scripts = document.getElementsByTagName('script')
-      currentScript = scripts[scripts.length - 1]
+      return this.getOpbeatScript()
     }
     return currentScript
   },
@@ -3217,6 +3238,7 @@ function TransactionService (zoneService, logger, config, opbeatBackend) {
   this.metrics = {}
 
   this._queue = []
+  this.initialPageLoadName = undefined
 
   this._subscription = new Subscription()
 
@@ -3339,10 +3361,12 @@ TransactionService.prototype.sendPageLoadMetrics = function (name) {
 
   tr = this._zoneService.getFromOpbeatZone('transaction')
 
+  var trName = name || this.initialPageLoadName || window.location.pathname
+
   if (tr) {
-    tr.redefine(name, 'page-load', perfOptions)
+    tr.redefine(trName, 'page-load', perfOptions)
   } else {
-    tr = new Transaction(name, 'page-load', perfOptions)
+    tr = new Transaction(trName, 'page-load', perfOptions)
   }
 
   tr.donePromise.then(function () {
