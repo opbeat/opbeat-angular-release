@@ -1,566 +1,4 @@
 (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(_dereq_,module,exports){
-var ngOpbeat = _dereq_('./ngOpbeat')
-var patchAngularBootstrap = _dereq_('./patches/bootstrapPatch')
-var patchCommon = _dereq_('opbeat-js-core').patchCommon
-
-function initialize (serviceFactory) {
-  var serviceContainer = serviceFactory.getPerformanceServiceContainer()
-  var services = serviceContainer.services
-  if (!services.configService.isPlatformSupported()) {
-    services.logger.warn('Platform is not supported.')
-  } else {
-    serviceContainer.initialize()
-  }
-
-  var alreadyRegistered = false
-  patchCommon(serviceContainer)
-
-  function noop () {}
-  services['angularInitializer'] = {
-    afterBootstrap: noop,
-    beforeBootstrap: noop
-  }
-
-  function beforeBootstrap (modules) {
-    services['angularInitializer'].beforeBootstrap()
-    if (!alreadyRegistered) {
-      alreadyRegistered = registerOpbeatModule(services)
-    }
-  }
-
-  function afterBootstrap () {
-    services['angularInitializer'].afterBootstrap()
-  }
-
-  services.exceptionHandler = serviceFactory.getExceptionHandler()
-  services.exceptionHandler.install()
-  alreadyRegistered = registerOpbeatModule(services)
-  patchAngularBootstrap(services.zoneService, beforeBootstrap, afterBootstrap)
-}
-
-function registerOpbeatModule (services) {
-  return ngOpbeat(services)
-}
-
-module.exports = initialize
-
-},{"./ngOpbeat":2,"./patches/bootstrapPatch":4,"opbeat-js-core":25}],2:[function(_dereq_,module,exports){
-var patchController = _dereq_('./patches/controllerPatch')
-var patchCompile = _dereq_('./patches/compilePatch')
-var patchRootScope = _dereq_('./patches/rootScopePatch')
-var patchDirectives = _dereq_('./patches/directivesPatch')
-var patchExceptionHandler = _dereq_('./patches/exceptionHandlerPatch')
-var patchInteractions = _dereq_('./patches/interactionsPatch')
-
-var utils = _dereq_('opbeat-js-core').utils
-
-function NgOpbeatProvider (logger, configService, exceptionHandler) {
-  this.config = function config (properties) {
-    if (properties) {
-      configService.setConfig(properties)
-    }
-  }
-
-  this.version = configService.get('VERSION')
-
-  this.install = function install () {
-    logger.warn('$opbeatProvider.install is deprecated!')
-  }
-
-  this.$get = [
-    function () {
-      return {
-        getConfig: function config () {
-          return configService
-        },
-        captureException: function captureException (exception, options) {
-          if (!(exception instanceof Error)) {
-            logger.warn("Can't capture exception. Passed exception needs to be an instanceof Error")
-            return
-          }
-
-          // TraceKit.report will re-raise any exception passed to it,
-          // which means you have to wrap it in try/catch. Instead, we
-          // can wrap it here and only re-raise if TraceKit.report
-          // raises an exception different from the one we asked to
-          // report on.
-
-          exceptionHandler.processError(exception, options)
-        },
-
-        setUserContext: function setUser (user) {
-          configService.set('context.user', user)
-        },
-
-        setExtraContext: function setExtraContext (data) {
-          configService.set('context.extra', data)
-        }
-      }
-    }
-  ]
-}
-
-function patchAll ($provide, transactionService) {
-  patchExceptionHandler($provide)
-  patchController($provide, transactionService)
-  patchCompile($provide, transactionService)
-  patchRootScope($provide, transactionService)
-  patchDirectives($provide, transactionService)
-  patchInteractions($provide, transactionService)
-}
-
-function publishExternalApi (spec) {
-  var opbeat = window.opbeat || (window.opbeat = {})
-  utils.extend(opbeat, spec)
-}
-
-function noop () {}
-
-function registerOpbeatModule (services) {
-  var transactionService = services.transactionService
-  var logger = services.logger
-  var configService = services.configService
-  var exceptionHandler = services.exceptionHandler
-  var angularInitializer = services.angularInitializer
-
-  var routeChanged = false
-  function moduleRun ($rootScope) {
-    configService.set('isInstalled', true)
-    configService.set('opbeatAgentName', 'opbeat-angular')
-    configService.set('platform.framework', 'angular/' + window.angular.version.full)
-
-    var platform = getPlatform()
-    if (platform) {
-      configService.set('platform.platform', platform)
-    }
-
-    logger.debug('Agent:', configService.getAgentName())
-
-    // onRouteChangeStart
-    function onRouteChangeStart (event, current) {
-      routeChanged = true
-      if (!configService.get('performance.enable')) {
-        logger.debug('Performance monitoring is disable')
-        return
-      }
-      logger.debug('Route change started')
-      var transactionName
-      if (current.$$route) { // ngRoute
-        // ignoring redirects since we will get another event
-        if (typeof current.$$route.redirectTo !== 'undefined') {
-          return
-        }
-        transactionName = current.$$route.originalPath
-      } else { // UI Router
-        transactionName = current.name
-      }
-      if (transactionName === '' || typeof transactionName === 'undefined') {
-        transactionName = '/'
-      }
-
-      transactionService.startTransaction(transactionName, 'route-change')
-    }
-
-    // ng-router
-    $rootScope.$on('$routeChangeStart', onRouteChangeStart)
-
-    // ui-router
-    $rootScope.$on('$stateChangeStart', onRouteChangeStart)
-  }
-
-  function moduleConfig ($provide) {
-    patchAll($provide, transactionService)
-  }
-
-  function getPlatform () {
-    var isCordovaApp = (typeof window.cordova !== 'undefined')
-    if (isCordovaApp) {
-      return 'cordova'
-    } else {
-      return 'browser'
-    }
-  }
-
-  publishExternalApi({
-    'setInitialPageLoadName': function setInitialPageLoadName (name) {
-      transactionService.initialPageLoadName = name
-    }
-  })
-
-  if (window.angular && typeof window.angular.module === 'function') {
-    if (!configService.isPlatformSupported()) {
-      window.angular.module('ngOpbeat', [])
-        .provider('$opbeat', new NgOpbeatProvider(logger, configService, exceptionHandler))
-        .config(['$provide', noop])
-        .run(['$rootScope', noop])
-    } else {
-      window.angular.module('ngOpbeat', [])
-        .provider('$opbeat', new NgOpbeatProvider(logger, configService, exceptionHandler))
-        .config(['$provide', moduleConfig])
-        .run(['$rootScope', moduleRun])
-
-      angularInitializer.beforeBootstrap = function beforeBootstrap () {
-        transactionService.metrics['appBeforeBootstrap'] = performance.now()
-      }
-      angularInitializer.afterBootstrap = function afterBootstrap () {
-        transactionService.metrics['appAfterBootstrap'] = performance.now()
-        if (!routeChanged) {
-          transactionService.sendPageLoadMetrics()
-        }
-      }
-    }
-    window.angular.module('opbeat-angular', ['ngOpbeat'])
-    return true
-  }
-}
-
-module.exports = registerOpbeatModule
-
-},{"./patches/compilePatch":5,"./patches/controllerPatch":6,"./patches/directivesPatch":7,"./patches/exceptionHandlerPatch":8,"./patches/interactionsPatch":9,"./patches/rootScopePatch":10,"opbeat-js-core":25}],3:[function(_dereq_,module,exports){
-var opbeatCore = _dereq_('opbeat-js-core')
-var ServiceFactory = opbeatCore.ServiceFactory
-var angularInitializer = _dereq_('./angularInitializer')
-
-_dereq_('zone.js')
-function init () {
-  var serviceFactory = new ServiceFactory()
-  if (window.opbeatApi && window.opbeatApi.serviceFactory) {
-    serviceFactory = window.opbeatApi.serviceFactory
-  }
-  angularInitializer(serviceFactory)
-}
-
-init()
-
-},{"./angularInitializer":1,"opbeat-js-core":25,"zone.js":37}],4:[function(_dereq_,module,exports){
-var DEFER_LABEL = 'NG_DEFER_BOOTSTRAP!'
-var deferRegex = new RegExp('^' + DEFER_LABEL + '.*')
-
-function patchMainBootstrap (opbeatBootstrap, weDeferred) {
-  if (typeof window.angular === 'undefined') {
-    return
-  }
-  var originalBootstrapFn = window.angular.bootstrap
-
-  function bootstrap (element, modules) {
-    if (weDeferred && deferRegex.test(window.name)) {
-      window.name = window.name.substring(DEFER_LABEL.length)
-    }
-    return opbeatBootstrap(originalBootstrapFn, window.angular, arguments)
-  }
-
-  Object.defineProperty(window.angular, 'bootstrap', {
-    get: function () {
-      if (typeof originalBootstrapFn === 'function') {
-        return bootstrap
-      } else {
-        return originalBootstrapFn
-      }
-    },
-    set: function (bootstrapFn) {
-      originalBootstrapFn = bootstrapFn
-    }
-  })
-}
-
-function patchDeferredBootstrap (opbeatBootstrap) {
-  if (typeof window.angular === 'undefined') {
-    return
-  }
-  // If the bootstrap is already deferred. (like run by Protractor)
-  // In this case `resumeBootstrap` should be patched
-  if (deferRegex.test(window.name)) {
-    var originalResumeBootstrap = window.angular.resumeBootstrap
-    Object.defineProperty(window.angular, 'resumeBootstrap', {
-      get: function () {
-        if (typeof originalResumeBootstrap === 'function') {
-          return function (modules) {
-            return opbeatBootstrap(originalResumeBootstrap, window.angular, arguments)
-          }
-        } else {
-          return originalResumeBootstrap
-        }
-      },
-      set: function (resumeBootstrap) {
-        originalResumeBootstrap = resumeBootstrap
-      }
-    })
-    // we have not deferred the bootstrap
-    return false
-  } else { // If this is not a test, defer bootstrapping
-    window.name = DEFER_LABEL + window.name
-
-    window.angular.resumeDeferredBootstrap = function () {
-      var modules = []
-      return opbeatBootstrap(window.angular.resumeBootstrap, window.angular, [modules])
-    }
-    /* angular should remove DEFER_LABEL from window.name, but if angular is never loaded, we want
-     to remove it ourselves */
-    window.addEventListener('beforeunload', function () {
-      if (deferRegex.test(window.name)) {
-        window.name = window.name.substring(DEFER_LABEL.length)
-      }
-    })
-    // we have deferred the bootstrap
-    return true
-  }
-}
-
-function createAngular (opbeatBootstrap) {
-  // with this method we can initialize opbeat-angular before or after angular is loaded
-  var alreadyPatched = false
-  var originalAngular = window.angular
-  // todo: check if defineProperty exists, add it isPlatformSupported
-  // we don't support browsers that don't have defineProperty (IE<9)
-  Object.defineProperty(window, 'angular', {
-    get: function () {
-      return originalAngular
-    },
-    set: function (value) {
-      originalAngular = value
-      if (!alreadyPatched && typeof originalAngular === 'object') {
-        alreadyPatched = true
-        patchAll(opbeatBootstrap)
-      }
-    },
-    enumerable: true,
-    configurable: true
-  })
-}
-
-function patchAll (opbeatBootstrap) {
-  var weDeferred = patchDeferredBootstrap(opbeatBootstrap)
-  patchMainBootstrap(opbeatBootstrap, weDeferred)
-}
-
-function patchAngularBootstrap (zoneService, beforeBootstrap, afterBootstrap) {
-  function opbeatBootstrap (fn, applyThis, applyArgs) {
-    if (typeof beforeBootstrap === 'function') {
-      beforeBootstrap()
-    }
-    var result = zoneService.runInOpbeatZone(fn, applyThis, applyArgs, 'angular:bootstrap')
-    if (typeof afterBootstrap === 'function') {
-      afterBootstrap()
-    }
-    return result
-  }
-
-  if (window.angular) {
-    patchAll(opbeatBootstrap)
-  } else {
-    createAngular(opbeatBootstrap)
-  }
-}
-
-module.exports = patchAngularBootstrap
-
-},{}],5:[function(_dereq_,module,exports){
-var opbeatCore = _dereq_('opbeat-js-core')
-var patchUtils = opbeatCore.patchUtils
-var utils = opbeatCore.utils
-module.exports = function ($provide, transactionService) {
-  $provide.decorator('$compile', ['$delegate', '$injector', function ($delegate, $injector) {
-    var nameParts = ['$compile', 'compile']
-    var traceType = 'template.$compile'
-
-    var traceName = nameParts.join('.')
-
-    function compile () {
-      var trace = transactionService.startTrace(traceName, traceType, {enableStackFrames: false})
-      try {
-        var result = $delegate.apply(this, arguments)
-      } finally {
-        if (!utils.isUndefined(trace)) {
-          trace.end()
-        }
-      }
-      return result
-    }
-
-    patchUtils._copyProperties($delegate, compile)
-
-    return compile
-  }])
-}
-
-},{"opbeat-js-core":25}],6:[function(_dereq_,module,exports){
-var utils = _dereq_('opbeat-js-core').utils
-
-function getControllerInfoFromArgs (args) {
-  var scope, name
-
-  if (typeof args[0] === 'string') {
-    name = args[0]
-  } else if (typeof args[0] === 'function') {
-    name = args[0].name
-  }
-
-  if (typeof args[1] === 'object') {
-    scope = args[1].$scope
-  }
-
-  return {
-    scope: scope,
-    name: name
-  }
-}
-
-module.exports = function ($provide, transactionService) {
-  $provide.decorator('$controller', ['$delegate', '$injector', function ($delegate, $injector) {
-    return function () {
-      var args = Array.prototype.slice.call(arguments)
-      var controllerInfo = getControllerInfoFromArgs(args)
-
-      if (controllerInfo.name) {
-        var traceName = '$controller.' + controllerInfo.name
-        var traceType = 'app.$controller'
-        var trace = transactionService.startTrace(traceName, traceType, {enableStackFrames: false})
-        var result
-
-        try {
-          result = $delegate.apply(this, arguments)
-        } finally {
-          if (!utils.isUndefined(trace)) {
-            trace.end()
-          }
-        }
-      } else {
-        result = $delegate.apply(this, arguments)
-      }
-
-      return result
-    }
-  }])
-}
-
-},{"opbeat-js-core":25}],7:[function(_dereq_,module,exports){
-var utils = _dereq_('opbeat-js-core').utils
-module.exports = function ($provide, transactionService) {
-  'use strict'
-  $provide.decorator('ngRepeatDirective', ['$delegate', '$injector', function ($delegate, $injector) {
-    var ngRepeat = $delegate[0]
-    var _compile = ngRepeat.compile
-
-    ngRepeat.compile = function () {
-      var _linkFn = _compile.apply(this, arguments)
-      return function () {
-        var scope = arguments[0]
-
-        var _watchCollection = scope.$watchCollection
-
-        scope.$watchCollection = function (watchExpression, reactionFunction) {
-          var watchStr = humanReadableWatchExpression(watchExpression)
-          if (typeof reactionFunction === 'function') {
-            // todo: angular $watchCollection only sends oldValue if (listenerFn.length > 1)
-            arguments[1] = function (newValue) {
-              var runtimeInfo = ''
-              if (watchStr != null) {
-                var arrayLength = Array.isArray(newValue) ? '[' + newValue.length + ']' : ''
-                runtimeInfo = watchStr + arrayLength
-              }
-
-              var traceName = 'ngRepeat ' + runtimeInfo
-              var traceType = 'template.ngRepeat'
-              var trace = transactionService.startTrace(traceName, traceType, { 'enableStackFrames': false })
-              var ret = reactionFunction.apply(this, arguments)
-
-              if (!utils.isUndefined(trace)) {
-                trace.end()
-              }
-              return ret
-            }
-          }
-          _watchCollection.apply(this, arguments)
-        }
-        var ret = _linkFn.apply(this, arguments)
-
-        // Should set $watchCollection back since the scope could be shared with other components
-        scope.$watchCollection = _watchCollection
-        return ret
-      }
-    }
-    return $delegate
-  }])
-}
-
-function humanReadableWatchExpression (fn) {
-  if (fn == null) {
-    return null
-  }
-  if (fn.exp) {
-    fn = fn.exp
-  } else if (fn.name) {
-    fn = fn.name
-  }
-  return fn.toString()
-}
-
-},{"opbeat-js-core":25}],8:[function(_dereq_,module,exports){
-
-module.exports = function patchExceptionHandler ($provide) {
-  $provide.decorator('$exceptionHandler', ['$delegate', '$opbeat', function $ExceptionHandlerDecorator ($delegate, $opbeat) {
-    return function $ExceptionHandler (exception, cause) {
-      $opbeat.captureException(exception)
-      return $delegate(exception, cause)
-    }
-  }])
-}
-
-},{}],9:[function(_dereq_,module,exports){
-module.exports = function ($provide, transactionService) {
-  'use strict'
-  function patchEventDirective (delegate, eventName) {
-    var nativeCompile = delegate.compile
-    delegate.compile = function () {
-      var nativeLink = nativeCompile.apply(this, arguments)
-      return function (scope, element, attributes) {
-        var directiveName = attributes.$normalize('ng-' + eventName)
-        var action = attributes[directiveName]
-        element.on(eventName, function (event) {
-          transactionService.startTransaction(directiveName + ': ' + action, 'interaction')
-        })
-        return nativeLink.apply(this, arguments)
-      }
-    }
-  }
-
-  $provide.decorator('ngSubmitDirective', ['$delegate', '$injector', function ($delegate, $injector) {
-    var directive = $delegate[0]
-    patchEventDirective(directive, 'submit')
-    return $delegate
-  }])
-
-  $provide.decorator('ngClickDirective', ['$delegate', '$injector', function ($delegate, $injector) {
-    var ngClick = $delegate[0]
-    patchEventDirective(ngClick, 'click')
-    return $delegate
-  }])
-}
-
-},{}],10:[function(_dereq_,module,exports){
-module.exports = function ($provide, transactionService) {
-  $provide.decorator('$rootScope', ['$delegate', '$injector', function ($delegate, $injector) {
-    return decorateRootScope($delegate, transactionService)
-  }])
-}
-
-function decorateRootScope ($delegate, transactionService) {
-  var scopePrototype = ('getPrototypeOf' in Object)
-    ? Object.getPrototypeOf($delegate) : $delegate.__proto__ // eslint-disable-line 
-
-  var _digest = scopePrototype.$digest
-  scopePrototype.$digest = function () {
-    var trace = transactionService.startTrace('$scope.$digest', 'app.$digest', {'enableStackFrames': false})
-    var ret = _digest.apply(this, arguments)
-    if (trace) {
-      trace.end()
-    }
-    return ret
-  }
-  return $delegate
-}
-
-},{}],11:[function(_dereq_,module,exports){
 (function (define){
 (function(root, factory) {
     'use strict';
@@ -781,7 +219,7 @@ function decorateRootScope ($delegate, transactionService) {
 
 
 }).call(this,undefined)
-},{"stackframe":14}],12:[function(_dereq_,module,exports){
+},{"stackframe":28}],2:[function(_dereq_,module,exports){
 (function (define){
 /*
 * loglevel - https://github.com/pimterry/loglevel
@@ -1008,167 +446,7 @@ function decorateRootScope ($delegate, transactionService) {
 }));
 
 }).call(this,undefined)
-},{}],13:[function(_dereq_,module,exports){
-(function (define){
-(function (root, factory) {
-    'use strict';
-    // Universal Module Definition (UMD) to support AMD, CommonJS/Node.js, Rhino, and browsers.
-
-    /* istanbul ignore next */
-    if (typeof define === 'function' && define.amd) {
-        define('stack-generator', ['stackframe'], factory);
-    } else if (typeof exports === 'object') {
-        module.exports = factory(_dereq_('stackframe'));
-    } else {
-        root.StackGenerator = factory(root.StackFrame);
-    }
-}(this, function (StackFrame) {
-    return {
-        backtrace: function StackGenerator$$backtrace(opts) {
-            var stack = [];
-            var maxStackSize = 10;
-
-            if (typeof opts === 'object' && typeof opts.maxStackSize === 'number') {
-                maxStackSize = opts.maxStackSize;
-            }
-
-            var curr = arguments.callee;
-            while (curr && stack.length < maxStackSize) {
-                // Allow V8 optimizations
-                var args = new Array(curr['arguments'].length);
-                for(var i = 0; i < args.length; ++i) {
-                    args[i] = curr['arguments'][i];
-                }
-                if (/function(?:\s+([\w$]+))+\s*\(/.test(curr.toString())) {
-                    stack.push(new StackFrame(RegExp.$1 || undefined, args));
-                } else {
-                    stack.push(new StackFrame(undefined, args));
-                }
-
-                try {
-                    curr = curr.caller;
-                } catch (e) {
-                    break;
-                }
-            }
-            return stack;
-        }
-    };
-}));
-
-}).call(this,undefined)
-},{"stackframe":14}],14:[function(_dereq_,module,exports){
-(function (define){
-(function (root, factory) {
-    'use strict';
-    // Universal Module Definition (UMD) to support AMD, CommonJS/Node.js, Rhino, and browsers.
-
-    /* istanbul ignore next */
-    if (typeof define === 'function' && define.amd) {
-        define('stackframe', [], factory);
-    } else if (typeof exports === 'object') {
-        module.exports = factory();
-    } else {
-        root.StackFrame = factory();
-    }
-}(this, function () {
-    'use strict';
-    function _isNumber(n) {
-        return !isNaN(parseFloat(n)) && isFinite(n);
-    }
-
-    function StackFrame(functionName, args, fileName, lineNumber, columnNumber, source) {
-        if (functionName !== undefined) {
-            this.setFunctionName(functionName);
-        }
-        if (args !== undefined) {
-            this.setArgs(args);
-        }
-        if (fileName !== undefined) {
-            this.setFileName(fileName);
-        }
-        if (lineNumber !== undefined) {
-            this.setLineNumber(lineNumber);
-        }
-        if (columnNumber !== undefined) {
-            this.setColumnNumber(columnNumber);
-        }
-        if (source !== undefined) {
-            this.setSource(source);
-        }
-    }
-
-    StackFrame.prototype = {
-        getFunctionName: function () {
-            return this.functionName;
-        },
-        setFunctionName: function (v) {
-            this.functionName = String(v);
-        },
-
-        getArgs: function () {
-            return this.args;
-        },
-        setArgs: function (v) {
-            if (Object.prototype.toString.call(v) !== '[object Array]') {
-                throw new TypeError('Args must be an Array');
-            }
-            this.args = v;
-        },
-
-        // NOTE: Property name may be misleading as it includes the path,
-        // but it somewhat mirrors V8's JavaScriptStackTraceApi
-        // https://code.google.com/p/v8/wiki/JavaScriptStackTraceApi and Gecko's
-        // http://mxr.mozilla.org/mozilla-central/source/xpcom/base/nsIException.idl#14
-        getFileName: function () {
-            return this.fileName;
-        },
-        setFileName: function (v) {
-            this.fileName = String(v);
-        },
-
-        getLineNumber: function () {
-            return this.lineNumber;
-        },
-        setLineNumber: function (v) {
-            if (!_isNumber(v)) {
-                throw new TypeError('Line Number must be a Number');
-            }
-            this.lineNumber = Number(v);
-        },
-
-        getColumnNumber: function () {
-            return this.columnNumber;
-        },
-        setColumnNumber: function (v) {
-            if (!_isNumber(v)) {
-                throw new TypeError('Column Number must be a Number');
-            }
-            this.columnNumber = Number(v);
-        },
-
-        getSource: function () {
-            return this.source;
-        },
-        setSource: function (v) {
-            this.source = String(v);
-        },
-
-        toString: function() {
-            var functionName = this.getFunctionName() || '{anonymous}';
-            var args = '(' + (this.getArgs() || []).join(',') + ')';
-            var fileName = this.getFileName() ? ('@' + this.getFileName()) : '';
-            var lineNumber = _isNumber(this.getLineNumber()) ? (':' + this.getLineNumber()) : '';
-            var columnNumber = _isNumber(this.getColumnNumber()) ? (':' + this.getColumnNumber()) : '';
-            return functionName + args + fileName + lineNumber + columnNumber;
-        }
-    };
-
-    return StackFrame;
-}));
-
-}).call(this,undefined)
-},{}],15:[function(_dereq_,module,exports){
+},{}],3:[function(_dereq_,module,exports){
 module.exports = {
   createValidFrames: function createValidFrames (frames) {
     var result = []
@@ -1181,7 +459,7 @@ module.exports = {
   }
 }
 
-},{}],16:[function(_dereq_,module,exports){
+},{}],4:[function(_dereq_,module,exports){
 var backendUtils = _dereq_('./backend_utils')
 var utils = _dereq_('../lib/utils')
 
@@ -1537,7 +815,7 @@ function traceGroupingKey (trace) {
   ].join('-')
 }
 
-},{"../lib/utils":29,"./backend_utils":15}],17:[function(_dereq_,module,exports){
+},{"../lib/utils":18,"./backend_utils":3}],5:[function(_dereq_,module,exports){
 var patchXMLHttpRequest = _dereq_('./patches/xhrPatch')
 
 function patchCommon (serviceContainer) {
@@ -1546,7 +824,7 @@ function patchCommon (serviceContainer) {
 
 module.exports = patchCommon
 
-},{"./patches/xhrPatch":19}],18:[function(_dereq_,module,exports){
+},{"./patches/xhrPatch":7}],6:[function(_dereq_,module,exports){
 module.exports = {
   patchFunction: function patchModule (delegate, options) {},
   _copyProperties: function _copyProperties (source, target) {
@@ -1621,7 +899,7 @@ function createNamedFn (name, delegate) {
   }
 }
 
-},{}],19:[function(_dereq_,module,exports){
+},{}],7:[function(_dereq_,module,exports){
 var patchUtils = _dereq_('../patchUtils')
 
 var urlSympbol = patchUtils.opbeatSymbol('url')
@@ -1639,7 +917,7 @@ module.exports = function patchXMLHttpRequest () {
   })
 }
 
-},{"../patchUtils":18}],20:[function(_dereq_,module,exports){
+},{"../patchUtils":6}],8:[function(_dereq_,module,exports){
 var OpbeatBackend = _dereq_('../backend/opbeat_backend')
 var Logger = _dereq_('loglevel')
 var Config = _dereq_('../lib/config')
@@ -1730,7 +1008,7 @@ ServiceFactory.prototype.getPerformanceServiceContainer = function () {
 
 module.exports = ServiceFactory
 
-},{"../backend/opbeat_backend":16,"../exceptions/exceptionHandler":22,"../exceptions/stackFrameService":23,"../lib/config":26,"../lib/transport":28,"../lib/utils":29,"../performance/serviceContainer":31,"loglevel":12}],21:[function(_dereq_,module,exports){
+},{"../backend/opbeat_backend":4,"../exceptions/exceptionHandler":10,"../exceptions/stackFrameService":11,"../lib/config":14,"../lib/transport":17,"../lib/utils":18,"../performance/serviceContainer":20,"loglevel":2}],9:[function(_dereq_,module,exports){
 function Subscription () {
   this.subscriptions = []
 }
@@ -1759,7 +1037,7 @@ Subscription.prototype.applyAll = function (applyTo, applyWith) {
 
 module.exports = Subscription
 
-},{}],22:[function(_dereq_,module,exports){
+},{}],10:[function(_dereq_,module,exports){
 var stackTrace = _dereq_('./stacktrace')
 var utils = _dereq_('../lib/utils')
 
@@ -1789,12 +1067,24 @@ ExceptionHandler.prototype.processError = function (err, options) {
   return this._processError(err, options)
 }
 
-ExceptionHandler.prototype._processError = function processError (error, options) {
+ExceptionHandler.prototype.getExceptionData = function getExceptionData (errorObject, options) {
   var eo = options && options.eventObject || {}
   var msg = eo.msg
   var file = eo.file
   var line = eo.line
   var col = eo.col
+  var error = errorObject
+
+  if (eo.msg && typeof eo.msg !== 'string') {
+    // https://developer.mozilla.org/en-US/docs/Web/API/ErrorEvent
+    var errorEvent = eo.msg
+    msg = errorEvent.message
+    file = file || errorEvent.filename
+    line = line || errorEvent.lineno
+    col = col || errorEvent.colno
+    error = errorObject || errorEvent.error
+  }
+
   if (msg === 'Script error.' && !file) {
     // ignoring script errors: See https://github.com/getsentry/raven-js/issues/41
     return
@@ -1813,11 +1103,12 @@ ExceptionHandler.prototype._processError = function processError (error, options
     'colno': col || null,
     'extra': extraContext
   }
-
   if (!exception.type) {
     // Try to extract type from message formatted like 'ReferenceError: Can't find variable: initHighlighting'
-    if (exception.message.indexOf(':') > -1) {
+    if (exception.message && exception.message.indexOf(':') > -1) {
       exception.type = exception.message.split(':')[0]
+    } else {
+      exception.type = ''
     }
   }
 
@@ -1828,9 +1119,9 @@ ExceptionHandler.prototype._processError = function processError (error, options
   } else {
     resolveStackFrames = new Promise(function (resolve, reject) {
       resolve([{
-        'fileName': file,
-        'lineNumber': line,
-        'columnNumber': col
+        'fileName': exception.fileurl,
+        'lineNumber': exception.lineno,
+        'columnNumber': exception.colno
       }])
     })
   }
@@ -1840,11 +1131,21 @@ ExceptionHandler.prototype._processError = function processError (error, options
     exception.stack = stackFrames || []
     return exceptionHandler._stackFrameService.stackInfoToOpbeatException(exception).then(function (exception) {
       var data = exceptionHandler._stackFrameService.processOpbeatException(exception, exceptionHandler._config.get('context.user'), exceptionHandler._config.get('context.extra'))
-      exceptionHandler._opbeatBackend.sendError(data)
+      return data
     })
-  })['catch'](function (error) {
-    exceptionHandler._logger.warn(error)
   })
+}
+
+ExceptionHandler.prototype._processError = function processError (errorObject, options) {
+  var exceptionHandler = this
+  var resultPromise = exceptionHandler.getExceptionData(errorObject, options)
+  if (resultPromise) {
+    return resultPromise.then(function (data) {
+      return exceptionHandler._opbeatBackend.sendError(data)
+    })['catch'](function (error) {
+      exceptionHandler._logger.warn(error)
+    })
+  }
 }
 
 function getProperties (err) {
@@ -1868,7 +1169,7 @@ function getProperties (err) {
 
 module.exports = ExceptionHandler
 
-},{"../lib/utils":29,"./stacktrace":24}],23:[function(_dereq_,module,exports){
+},{"../lib/utils":18,"./stacktrace":12}],11:[function(_dereq_,module,exports){
 var utils = _dereq_('../lib/utils')
 var stackTrace = _dereq_('./stacktrace')
 
@@ -1995,8 +1296,13 @@ StackFrameService.prototype.processOpbeatException = function (exception, userCo
     culprit = fileName
   }
 
+  var messagePrefix = ''
+  if (type && typeof message === 'string' && message.indexOf('Error:') !== 0) {
+    messagePrefix = type + ': '
+  }
+
   var data = {
-    message: type + ': ' + message,
+    message: messagePrefix + message,
     culprit: culprit,
     exception: {
       type: type,
@@ -2077,7 +1383,7 @@ StackFrameService.prototype.getBrowserSpecificMetadata = function () {
 
 module.exports = StackFrameService
 
-},{"../lib/utils":29,"./stacktrace":24}],24:[function(_dereq_,module,exports){
+},{"../lib/utils":18,"./stacktrace":12}],12:[function(_dereq_,module,exports){
 var ErrorStackParser = _dereq_('error-stack-parser')
 var StackGenerator = _dereq_('stack-generator')
 var utils = _dereq_('../lib/utils')
@@ -2184,7 +1490,7 @@ function normalizeFunctionName (fnName) {
   return fnName
 }
 
-},{"../lib/utils":29,"error-stack-parser":11,"stack-generator":13}],25:[function(_dereq_,module,exports){
+},{"../lib/utils":18,"error-stack-parser":1,"stack-generator":27}],13:[function(_dereq_,module,exports){
 // export public core APIs.
 
 module.exports['ServiceFactory'] = _dereq_('./common/serviceFactory')
@@ -2197,10 +1503,9 @@ module.exports['patchUtils'] = _dereq_('./common/patchUtils')
 module.exports['patchCommon'] = _dereq_('./common/patchCommon')
 module.exports['utils'] = _dereq_('./lib/utils')
 
-var test = module.exports['test'] = {}
-test.ZoneServiceMock = _dereq_('../test/performance/zoneServiceMock')
+module.exports['addFilter'] = _dereq_('./lib/filtering').addFilter
 
-},{"../test/performance/zoneServiceMock":36,"./common/patchCommon":17,"./common/patchUtils":18,"./common/serviceFactory":20,"./common/subscription":21,"./lib/config":26,"./lib/utils":29,"./performance/serviceContainer":31,"./performance/transactionService":34}],26:[function(_dereq_,module,exports){
+},{"./common/patchCommon":5,"./common/patchUtils":6,"./common/serviceFactory":8,"./common/subscription":9,"./lib/config":14,"./lib/filtering":15,"./lib/utils":18,"./performance/serviceContainer":20,"./performance/transactionService":23}],14:[function(_dereq_,module,exports){
 var utils = _dereq_('./utils')
 var Subscription = _dereq_('../common/subscription')
 
@@ -2208,8 +1513,8 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.14.0',
-    apiHost: 'intake.opbeat.com',
+    VERSION: 'v3.15.0',
+    apiOrigin: 'https://intake.opbeat.com',
     isInstalled: false,
     debug: false,
     logLevel: 'warn',
@@ -2229,6 +1534,7 @@ function Config () {
       includeXHRQueryString: false,
       capturePageLoad: true
     },
+    ignoreTransactions: [],
     libraryPathPattern: '(node_modules|bower_components|webpack)',
     context: {},
     platform: {}
@@ -2325,7 +1631,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.14.0'
+Config.prototype.VERSION = 'v3.15.0'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
@@ -2338,7 +1644,28 @@ Config.prototype.isPlatformSupported = function () {
 
 module.exports = new Config()
 
-},{"../common/subscription":21,"./utils":29}],27:[function(_dereq_,module,exports){
+},{"../common/subscription":9,"./utils":18}],15:[function(_dereq_,module,exports){
+var filters = []
+
+module.exports = {
+  addFilter: function addFilter (cb) {
+    if (typeof cb !== 'function') {
+      throw new Error("Argument to 'addFilter' must be function")
+    }
+    filters.push(cb)
+  },
+  applyFilters: function (data) {
+    for (var i = 0; i < filters.length; i++) {
+      data = filters[i](data)
+      if (!data) {
+        return
+      }
+    }
+    return data
+  }
+}
+
+},{}],16:[function(_dereq_,module,exports){
 var config = _dereq_('./config')
 
 var logStack = []
@@ -2381,12 +1708,19 @@ module.exports = {
   }
 }
 
-},{"./config":26}],28:[function(_dereq_,module,exports){
+},{"./config":14}],17:[function(_dereq_,module,exports){
 var logger = _dereq_('./logger')
 var config = _dereq_('./config')
 
+var applyFilters = _dereq_('./filtering').applyFilters
+
 module.exports = {
   sendError: function (data, headers) {
+    data = applyFilters(data)
+    if (!data) {
+      logger.log('opbeat.transport.sendToOpbeat.cancelled')
+    }
+
     return _sendToOpbeat('errors', data, headers)
   },
 
@@ -2402,7 +1736,7 @@ module.exports = {
 function _sendToOpbeat (endpoint, data, headers) {
   logger.log('opbeat.transport.sendToOpbeat', data)
 
-  var url = 'https://' + config.get('apiHost') + '/api/v1/organizations/' + config.get('orgId') + '/apps/' + config.get('appId') + '/client-side/' + endpoint + '/'
+  var url = config.get('apiOrigin') + '/api/v1/organizations/' + config.get('orgId') + '/apps/' + config.get('appId') + '/client-side/' + endpoint + '/'
 
   return _makeRequest(url, 'POST', 'JSON', data, headers)
 }
@@ -2455,7 +1789,7 @@ function _makeRequest (url, method, type, data, headers) {
   })
 }
 
-},{"./config":26,"./logger":27}],29:[function(_dereq_,module,exports){
+},{"./config":14,"./filtering":15,"./logger":16}],18:[function(_dereq_,module,exports){
 var slice = [].slice
 
 module.exports = {
@@ -2665,22 +1999,26 @@ module.exports = {
     return 'withCredentials' in xhr
   },
   getOpbeatScript: function () {
-    var scripts = document.getElementsByTagName('script')
-    for (var i = 0, l = scripts.length; i < l; i++) {
-      var sc = scripts[i]
-      if (sc.src.indexOf('opbeat') > 0) {
-        return sc
+    if (typeof document !== 'undefined') {
+      var scripts = document.getElementsByTagName('script')
+      for (var i = 0, l = scripts.length; i < l; i++) {
+        var sc = scripts[i]
+        if (sc.src.indexOf('opbeat') > 0) {
+          return sc
+        }
       }
     }
   },
 
   getCurrentScript: function () {
-    // Source http://www.2ality.com/2014/05/current-script.html
-    var currentScript = document.currentScript
-    if (!currentScript) {
-      return this.getOpbeatScript()
+    if (typeof document !== 'undefined') {
+      // Source http://www.2ality.com/2014/05/current-script.html
+      var currentScript = document.currentScript
+      if (!currentScript) {
+        return this.getOpbeatScript()
+      }
+      return currentScript
     }
-    return currentScript
   },
 
   generateUuid: function () {
@@ -2729,7 +2067,7 @@ function isFunction (value) {
   return typeof value === 'function'
 }
 
-},{}],30:[function(_dereq_,module,exports){
+},{}],19:[function(_dereq_,module,exports){
 var Trace = _dereq_('./trace')
 
 var eventPairs = [
@@ -2779,10 +2117,29 @@ module.exports = function captureHardNavigation (transaction) {
 
     if (window.performance.getEntriesByType) {
       var entries = window.performance.getEntriesByType('resource')
+
+      var ajaxUrls = transaction.traces
+          .filter(function (trace) { return trace.type.indexOf('ext.HttpRequest') > -1 })
+          .map(function (trace) { return trace.signature.split(' ')[1] })
+
       for (i = 0; i < entries.length; i++) {
         var entry = entries[i]
         if (entry.initiatorType && entry.initiatorType === 'xmlhttprequest') {
           continue
+        } else if (entry.initiatorType !== 'css' && entry.initiatorType !== 'img' && entry.initiatorType !== 'script' && entry.initiatorType !== 'link') {
+          // is web request? test for css/img before the expensive operation
+          var foundAjaxReq = false
+          for (var j = 0; j < ajaxUrls.length; j++) {
+            // entry.name.endsWith(ajaxUrls[j])
+            var idx = entry.name.lastIndexOf(ajaxUrls[j])
+            if (idx > -1 && idx === (entry.name.length - ajaxUrls[j].length)) {
+              foundAjaxReq = true
+              break
+            }
+          }
+          if (foundAjaxReq) {
+            continue
+          }
         } else {
           var kind = 'resource'
           if (entry.initiatorType) {
@@ -2819,7 +2176,7 @@ module.exports = function captureHardNavigation (transaction) {
   return 0
 }
 
-},{"./trace":32}],31:[function(_dereq_,module,exports){
+},{"./trace":21}],20:[function(_dereq_,module,exports){
 var TransactionService = _dereq_('./transactionService')
 var ZoneService = _dereq_('./zoneService')
 var utils = _dereq_('../lib/utils')
@@ -2835,10 +2192,10 @@ function ServiceContainer (serviceFactory) {
 ServiceContainer.prototype.initialize = function () {
   var configService = this.services.configService
   var logger = this.services.logger
-  var zoneService = this.services.zoneService
+  this.services.zoneService.initialize(window.Zone.current)
 
   var opbeatBackend = this.services.opbeatBackend = this.serviceFactory.getOpbeatBackend()
-  var transactionService = this.services.transactionService = this.services.transactionService = new TransactionService(zoneService, this.services.logger, configService, opbeatBackend)
+  var transactionService = this.services.transactionService = new TransactionService(this.services.zoneService, this.services.logger, configService, opbeatBackend)
   transactionService.scheduleTransactionSend()
 
   if (utils.isUndefined(window.opbeatApi)) {
@@ -2861,12 +2218,12 @@ ServiceContainer.prototype.initialize = function () {
 ServiceContainer.prototype.createZoneService = function () {
   var logger = this.services.logger
 
-  return new ZoneService(window.Zone.current, logger, this.services.configService)
+  return new ZoneService(logger, this.services.configService)
 }
 
 module.exports = ServiceContainer
 
-},{"../lib/utils":29,"./transactionService":34,"./zoneService":35}],32:[function(_dereq_,module,exports){
+},{"../lib/utils":18,"./transactionService":23,"./zoneService":24}],21:[function(_dereq_,module,exports){
 var utils = _dereq_('../lib/utils')
 
 function Trace (transaction, signature, type, options) {
@@ -2881,24 +2238,8 @@ function Trace (transaction, signature, type, options) {
   // Start timers
   this._start = window.performance.now()
 
-  this._isFinish = new Promise(function (resolve, reject) {
-    this._markFinishedFunc = resolve
-  }.bind(this))
-
   if (utils.isUndefined(options) || options == null) {
     options = {}
-  }
-  var shouldGenerateStackFrames = options['enableStackFrames']
-
-  if (shouldGenerateStackFrames) {
-    this.getTraceStackFrames(function (frames) {
-      if (frames) {
-        this.frames = frames.reverse() // Reverse frames to make Opbeat happy
-      }
-      this._markFinishedFunc() // Mark the trace as finished
-    }.bind(this))
-  } else {
-    this._markFinishedFunc() // Mark the trace as finished
   }
 }
 
@@ -2974,11 +2315,11 @@ Trace.prototype.getTraceStackFrames = function (callback) {
 
 module.exports = Trace
 
-},{"../lib/utils":29}],33:[function(_dereq_,module,exports){
+},{"../lib/utils":18}],22:[function(_dereq_,module,exports){
 var Trace = _dereq_('./trace')
 var utils = _dereq_('../lib/utils')
 
-var Transaction = function (name, type, options) {
+var Transaction = function (name, type, options, logger) {
   this.metadata = {}
   this.name = name
   this.type = type
@@ -2986,6 +2327,7 @@ var Transaction = function (name, type, options) {
   this._markDoneAfterLastTrace = false
   this._isDone = false
   this._options = options
+  this._logger = logger
   if (typeof options === 'undefined') {
     this._options = {}
   }
@@ -3026,7 +2368,9 @@ Transaction.prototype.debugLog = function () {
   if (this._options.sendVerboseDebugInfo) {
     var messages = (arguments.length === 1 ? [arguments[0]] : Array.apply(null, arguments))
     messages.unshift(Date.now().toString())
-    this.contextInfo._debug.log.push(messages.join(' - '))
+    var textMessage = messages.join(' - ')
+    this.contextInfo._debug.log.push(textMessage)
+    if (this._logger) this._logger.debug(textMessage)
   }
 }
 
@@ -3080,7 +2424,7 @@ Transaction.prototype.recordEvent = function (e) {
 
 Transaction.prototype.isFinished = function () {
   var scheduledTasks = Object.keys(this._scheduledTasks)
-  this.debugLog('isFinished scheduledTasks.length', scheduledTasks.length)
+  this.debugLog('isFinished scheduledTasks', scheduledTasks)
   return (scheduledTasks.length === 0)
 }
 
@@ -3149,41 +2493,28 @@ Transaction.prototype._finish = function () {
     this.traces.push(eventTrace)
   }
 
-  var self = this
-  var allTraces = Object.keys(self._activeTraces).map(function (key) {
-    return self._activeTraces[key]
-  })
-  allTraces = allTraces.concat(self.traces)
-
-  var whenAllTracesFinished = allTraces.map(function (trace) {
-    return trace._isFinish
-  })
-
-  Promise.all(whenAllTracesFinished).then(function () {
-    self._adjustStartToEarliestTrace()
-    self._adjustEndToLatestTrace()
-    self.donePromise._resolve(self)
-  })
+  this._adjustStartToEarliestTrace()
+  this._adjustEndToLatestTrace()
+  this.donePromise._resolve(this)
 }
 
 Transaction.prototype._adjustEndToLatestTrace = function () {
-  var latestTrace
-  var rootTrace = this._rootTrace
-  this.traces.forEach(function (trace) {
-    // Excluding rootTrace
-    if (trace === rootTrace) return
+  var latestTrace = findLatestNonXHRTrace(this.traces)
 
-    if (!latestTrace) {
-      latestTrace = trace
-    }
-    if (latestTrace && latestTrace._end < trace._end) {
-      latestTrace = trace
-    }
-  })
-
-  if (typeof latestTrace !== 'undefined') {
+  if (latestTrace) {
     this._rootTrace._end = latestTrace._end
     this._rootTrace.calcDiff()
+
+    // set all traces that now are longer than the transaction to
+    // be truncated traces
+    for (var i = 0; i < this.traces.length; i++) {
+      var trace = this.traces[i]
+      if (trace._end > this._rootTrace._end) {
+        trace._end = this._rootTrace._end
+        trace.calcDiff()
+        trace.type = trace.type + '.truncated'
+      }
+    }
   }
 }
 
@@ -3195,6 +2526,19 @@ Transaction.prototype._adjustStartToEarliestTrace = function () {
     this._rootTrace.calcDiff()
     this._start = this._rootTrace._start
   }
+}
+
+function findLatestNonXHRTrace (traces) {
+  var latestTrace = null
+  for (var i = 0; i < traces.length; i++) {
+    var trace = traces[i]
+    if (trace.type && trace.type.indexOf('ext') === -1 &&
+         trace.type !== 'transaction' &&
+         (!latestTrace || latestTrace._end < trace._end)) {
+      latestTrace = trace
+    }
+  }
+  return latestTrace
 }
 
 function getEarliestTrace (traces) {
@@ -3214,7 +2558,7 @@ function getEarliestTrace (traces) {
 
 module.exports = Transaction
 
-},{"../lib/utils":29,"./trace":32}],34:[function(_dereq_,module,exports){
+},{"../lib/utils":18,"./trace":21}],23:[function(_dereq_,module,exports){
 var Transaction = _dereq_('./transaction')
 var utils = _dereq_('../lib/utils')
 var Subscription = _dereq_('../common/subscription')
@@ -3231,8 +2575,7 @@ function TransactionService (zoneService, logger, config, opbeatBackend) {
   this._opbeatBackend = opbeatBackend
   this._zoneService = zoneService
 
-  this.transactions = []
-  this.nextId = 1
+  this.nextAutoTaskId = 1
 
   this.taskMap = {}
   this.metrics = {}
@@ -3252,6 +2595,9 @@ function TransactionService (zoneService, logger, config, opbeatBackend) {
     transactionService.logInTransaction('Executing', task.taskId)
   }
   zoneService.spec.onBeforeInvokeTask = onBeforeInvokeTask
+
+  var self = this
+
   function onScheduleTask (task) {
     if (task.source === 'XMLHttpRequest.send') {
       var url = task['XHR']['url']
@@ -3265,6 +2611,10 @@ function TransactionService (zoneService, logger, config, opbeatBackend) {
 
       var trace = transactionService.startTrace(traceSignature, 'ext.HttpRequest', {'enableStackFrames': false})
       task.trace = trace
+    } else if (task.type === 'interaction') {
+      if (typeof self.interactionStarted === 'function') {
+        self.interactionStarted(task)
+      }
     }
     transactionService.addTask(task.taskId)
   }
@@ -3298,10 +2648,6 @@ function TransactionService (zoneService, logger, config, opbeatBackend) {
   zoneService.spec.onInvokeStart = onInvokeStart
 }
 
-TransactionService.prototype.getTransaction = function (id) {
-  return this.transactions[id]
-}
-
 TransactionService.prototype.createTransaction = function (name, type, options) {
   var perfOptions = options
   if (utils.isUndefined(perfOptions)) {
@@ -3311,7 +2657,7 @@ TransactionService.prototype.createTransaction = function (name, type, options) 
     return
   }
 
-  var tr = new Transaction(name, type, perfOptions)
+  var tr = new Transaction(name, type, perfOptions, this._logger)
   tr.setDebugData('zone', this._zoneService.getCurrentZone().name)
   this._zoneService.set('transaction', tr)
   if (perfOptions.checkBrowserResponsiveness) {
@@ -3363,11 +2709,12 @@ TransactionService.prototype.sendPageLoadMetrics = function (name) {
 
   var trName = name || this.initialPageLoadName || window.location.pathname
 
-  if (tr) {
+  if (tr && tr.name === 'ZoneTransaction') {
     tr.redefine(trName, 'page-load', perfOptions)
   } else {
-    tr = new Transaction(trName, 'page-load', perfOptions)
+    tr = new Transaction(trName, 'page-load', perfOptions, this._logger)
   }
+  tr.isHardNavigation = true
 
   tr.donePromise.then(function () {
     var captured = self.capturePageLoadMetrics(tr)
@@ -3383,9 +2730,8 @@ TransactionService.prototype.sendPageLoadMetrics = function (name) {
 TransactionService.prototype.capturePageLoadMetrics = function (tr) {
   var self = this
   var capturePageLoad = self._config.get('performance.capturePageLoad')
-  if (capturePageLoad && !self._alreadyCapturedPageLoad) {
+  if (capturePageLoad && !self._alreadyCapturedPageLoad && tr.isHardNavigation) {
     tr.addMetrics(self.metrics)
-    tr.isHardNavigation = true
     captureHardNavigation(tr)
     self._alreadyCapturedPageLoad = true
     return true
@@ -3399,6 +2745,7 @@ TransactionService.prototype.startTransaction = function (name, type) {
     return
   }
 
+  // this will create a zone transaction if possible
   var tr = this.getCurrentTransaction()
 
   if (tr) {
@@ -3415,25 +2762,33 @@ TransactionService.prototype.startTransaction = function (name, type) {
     return
   }
 
-  if (this.transactions.indexOf(tr) === -1) {
-    this._logger.debug('TransactionService.startTransaction', tr)
-    var p = tr.donePromise
-    p.then(function (t) {
-      self._logger.debug('TransactionService transaction finished', tr)
-      self.capturePageLoadMetrics(tr)
+  this._logger.debug('TransactionService.startTransaction', tr)
+  tr.donePromise.then(function () {
+    self._logger.debug('TransactionService transaction finished', tr)
 
+    if (tr.traces.length > 1 && !self.shouldIgnoreTransaction(tr.name)) {
+      self.capturePageLoadMetrics(tr)
       self.add(tr)
       self._subscription.applyAll(self, [tr])
-
-      var index = self.transactions.indexOf(tr)
-      if (index !== -1) {
-        self.transactions.splice(index, 1)
-      }
-    })
-    this.transactions.push(tr)
-  }
-
+    }
+  })
   return tr
+}
+
+TransactionService.prototype.shouldIgnoreTransaction = function (transaction_name) {
+  var ignoreList = this._config.get('ignoreTransactions')
+
+  for (var i = 0; i < ignoreList.length; i++) {
+    var element = ignoreList[i]
+    if (typeof element.test === 'function') {
+      if (element.test(transaction_name)) {
+        return true
+      }
+    } else if (element === transaction_name) {
+      return true
+    }
+  }
+  return false
 }
 
 TransactionService.prototype.startTrace = function (signature, type, options) {
@@ -3471,9 +2826,13 @@ TransactionService.prototype.subscribe = function (fn) {
 TransactionService.prototype.addTask = function (taskId) {
   var tr = this.getCurrentTransaction()
   if (tr) {
+    if (typeof taskId === 'undefined') {
+      taskId = 'autoId' + this.nextAutoTaskId++
+    }
     tr.addTask(taskId)
     this._logger.debug('TransactionService.addTask', taskId)
   }
+  return taskId
 }
 TransactionService.prototype.removeTask = function (taskId) {
   var tr = this._zoneService.get('transaction')
@@ -3522,7 +2881,7 @@ TransactionService.prototype.scheduleTransactionSend = function () {
 
 module.exports = TransactionService
 
-},{"../common/subscription":21,"../lib/utils":29,"./captureHardNavigation":30,"./transaction":33}],35:[function(_dereq_,module,exports){
+},{"../common/subscription":9,"../lib/utils":18,"./captureHardNavigation":19,"./transaction":22}],24:[function(_dereq_,module,exports){
 var Subscription = _dereq_('../common/subscription')
 var patchUtils = _dereq_('../common/patchUtils')
 var opbeatTaskSymbol = patchUtils.opbeatSymbol('taskData')
@@ -3534,12 +2893,17 @@ var XMLHttpRequest_send = 'XMLHttpRequest.send'
 
 var opbeatDataSymbol = patchUtils.opbeatSymbol('opbeatData')
 
-function ZoneService (zone, logger, config) {
+var testTransactionAfterEvents = ['click', 'contextmenu', 'dblclick', 'mousedown', 'keydown', 'keypress', 'keyup'] // leave these out for now: 'mouseenter', 'mouseleave', 'mousemove', 'mouseout', 'mouseover',
+var testTransactionAfterEventsObj = {}
+testTransactionAfterEvents.forEach(function (ev) {
+  testTransactionAfterEventsObj[ev] = 1
+})
+
+function ZoneService (logger, config) {
   this.events = new Subscription()
 
   var nextId = 0
 
-  this.events = new Subscription()
   // var zoneService = this
   function noop () { }
   var spec = this.spec = {
@@ -3552,7 +2916,7 @@ function ZoneService (zone, logger, config) {
     onInvokeEnd: noop
   }
 
-  var zoneConfig = {
+  this.zoneConfig = {
     name: 'opbeatRootZone',
     onScheduleTask: function (parentZoneDelegate, currentZone, targetZone, task) {
       if (task.type === 'eventTask' && task.data.eventName === 'opbeatImmediatelyFiringEvent') {
@@ -3613,15 +2977,31 @@ function ZoneService (zone, logger, config) {
         }
       } else if (task.type === 'eventTask' && hasTarget && (task.data.eventName === 'readystatechange' || task.data.eventName === 'load')) {
         task.data.target[opbeatDataSymbol].registeredEventListeners[task.data.eventName] = {resolved: false}
+      } else if (task.type === 'microTask' && task.source === 'Promise.then') {
+        taskId = nextId++
+        opbeatTask = {
+          taskId: task.source + taskId,
+          source: task.source,
+          type: task.type
+        }
+
+        task[opbeatTaskSymbol] = opbeatTask
+        spec.onScheduleTask(opbeatTask)
       }
 
       var delegateTask = parentZoneDelegate.scheduleTask(targetZone, task)
       return delegateTask
     },
     onInvoke: function (parentZoneDelegate, currentZone, targetZone, delegate, applyThis, applyArgs, source) {
-      spec.onInvokeStart({source: source, type: 'invoke'})
+      var taskId = nextId++
+      var opbeatTask = {
+        taskId: source + taskId,
+        source: source,
+        type: 'invoke'
+      }
+      spec.onInvokeStart(opbeatTask)
       var result = delegate.apply(applyThis, applyArgs)
-      spec.onInvokeEnd({source: source, type: 'invoke'})
+      spec.onInvokeEnd(opbeatTask)
       return result
     },
     onInvokeTask: function (parentZoneDelegate, currentZone, targetZone, task, applyThis, applyArgs) {
@@ -3648,10 +3028,24 @@ function ZoneService (zone, logger, config) {
         if (opbeatTask && (!opbeatData.registeredEventListeners['load'] || opbeatData.registeredEventListeners['load'].resolved) && (!opbeatData.registeredEventListeners['readystatechange'] || opbeatData.registeredEventListeners['readystatechange'].resolved) && opbeatTask.XHR.resolved) {
           spec.onInvokeTask(opbeatTask)
         }
-      } else if (task[opbeatTaskSymbol] && (task.source === 'setTimeout')) {
+      } else if (task[opbeatTaskSymbol] && (task.source === 'setTimeout' || task.source === 'Promise.then')) {
         spec.onBeforeInvokeTask(task[opbeatTaskSymbol])
         result = parentZoneDelegate.invokeTask(targetZone, task, applyThis, applyArgs)
         spec.onInvokeTask(task[opbeatTaskSymbol])
+      } else if (task.type === 'eventTask' && hasTarget && task.data.eventName in testTransactionAfterEventsObj) {
+        var taskId = nextId++
+        opbeatTask = {
+          taskId: task.source + taskId,
+          source: task.source,
+          type: 'interaction',
+          applyArgs: applyArgs
+        }
+
+        spec.onScheduleTask(opbeatTask)
+
+        // clear traces on the zone transaction
+        result = parentZoneDelegate.invokeTask(targetZone, task, applyThis, applyArgs)
+        spec.onInvokeTask(opbeatTask)
       } else {
         result = parentZoneDelegate.invokeTask(targetZone, task, applyThis, applyArgs)
       }
@@ -3687,20 +3081,23 @@ function ZoneService (zone, logger, config) {
 
   //     var childZoneData = {name: childZone.name}
 
-  //     if (targetZone._properties['opbeatZoneData']) {
-  //       targetZone._properties['opbeatZoneData'].children.push(childZoneData)
-  //     } else {
-  //       targetZone._properties['opbeatZoneData'] = {
-  //         name: targetZone.name,
-  //         children: [childZoneData]
-  //       }
-  //     }
-  //     console.log('onFork:opbeatZoneData:', targetZone._properties['opbeatZoneData'])
-  //     return childZone
-  //   }
-  // }
+//     if (targetZone._properties['opbeatZoneData']) {
+//       targetZone._properties['opbeatZoneData'].children.push(childZoneData)
+//     } else {
+//       targetZone._properties['opbeatZoneData'] = {
+//         name: targetZone.name,
+//         children: [childZoneData]
+//       }
+//     }
+//     console.log('onFork:opbeatZoneData:', targetZone._properties['opbeatZoneData'])
+//     return childZone
+//   }
+// }
+}
+
+ZoneService.prototype.initialize = function (zone) {
   this.outer = zone
-  this.zone = zone.fork(zoneConfig)
+  this.zone = zone.fork(this.zoneConfig)
 }
 
 ZoneService.prototype.set = function (key, value) {
@@ -3735,1424 +3132,3244 @@ ZoneService.prototype.runInOpbeatZone = function runInOpbeatZone (fn, applyThis,
 
 module.exports = ZoneService
 
-},{"../common/patchUtils":18,"../common/subscription":21}],36:[function(_dereq_,module,exports){
-function ZoneServiceMock () {
-  function noop () { }
+},{"../common/patchUtils":6,"../common/subscription":9}],25:[function(_dereq_,module,exports){
+(function (global,define){
+/**
+* @license
+* Copyright Google Inc. All Rights Reserved.
+*
+* Use of this source code is governed by an MIT-style license that can be
+* found in the LICENSE file at https://angular.io/license
+*/
+(function (global, factory) {
+    typeof exports === 'object' && typeof module !== 'undefined' ? factory() :
+    typeof define === 'function' && define.amd ? define(factory) :
+    (factory());
+}(this, (function () { 'use strict';
 
-  this.spec = {
-    onScheduleTask: noop,
-    onInvokeTask: noop,
-    onCancelTask: noop
+/**
+ * @license
+ * Copyright Google Inc. All Rights Reserved.
+ *
+ * Use of this source code is governed by an MIT-style license that can be
+ * found in the LICENSE file at https://angular.io/license
+ */
+var Zone$1 = (function (global) {
+    var performance = global['performance'];
+    function mark(name) {
+        performance && performance['mark'] && performance['mark'](name);
+    }
+    function performanceMeasure(name, label) {
+        performance && performance['measure'] && performance['measure'](name, label);
+    }
+    mark('Zone');
+    if (global['Zone']) {
+        throw new Error('Zone already loaded.');
+    }
+    var Zone = (function () {
+        function Zone(parent, zoneSpec) {
+            this._properties = null;
+            this._parent = parent;
+            this._name = zoneSpec ? zoneSpec.name || 'unnamed' : '<root>';
+            this._properties = zoneSpec && zoneSpec.properties || {};
+            this._zoneDelegate =
+                new ZoneDelegate(this, this._parent && this._parent._zoneDelegate, zoneSpec);
+        }
+        Zone.assertZonePatched = function () {
+            if (global['Promise'] !== patches['ZoneAwarePromise']) {
+                throw new Error('Zone.js has detected that ZoneAwarePromise `(window|global).Promise` ' +
+                    'has been overwritten.\n' +
+                    'Most likely cause is that a Promise polyfill has been loaded ' +
+                    'after Zone.js (Polyfilling Promise api is not necessary when zone.js is loaded. ' +
+                    'If you must load one, do so before loading zone.js.)');
+            }
+        };
+        Object.defineProperty(Zone, "root", {
+            get: function () {
+                var zone = Zone.current;
+                while (zone.parent) {
+                    zone = zone.parent;
+                }
+                return zone;
+            },
+            enumerable: true,
+            configurable: true
+        });
+        Object.defineProperty(Zone, "current", {
+            get: function () {
+                return _currentZoneFrame.zone;
+            },
+            enumerable: true,
+            configurable: true
+        });
+        
+        Object.defineProperty(Zone, "currentTask", {
+            get: function () {
+                return _currentTask;
+            },
+            enumerable: true,
+            configurable: true
+        });
+        
+        Zone.__load_patch = function (name, fn) {
+            if (patches.hasOwnProperty(name)) {
+                throw Error('Already loaded patch: ' + name);
+            }
+            else if (!global['__Zone_disable_' + name]) {
+                var perfName = 'Zone:' + name;
+                mark(perfName);
+                patches[name] = fn(global, Zone, _api);
+                performanceMeasure(perfName, perfName);
+            }
+        };
+        Object.defineProperty(Zone.prototype, "parent", {
+            get: function () {
+                return this._parent;
+            },
+            enumerable: true,
+            configurable: true
+        });
+        
+        Object.defineProperty(Zone.prototype, "name", {
+            get: function () {
+                return this._name;
+            },
+            enumerable: true,
+            configurable: true
+        });
+        
+        Zone.prototype.get = function (key) {
+            var zone = this.getZoneWith(key);
+            if (zone)
+                return zone._properties[key];
+        };
+        Zone.prototype.getZoneWith = function (key) {
+            var current = this;
+            while (current) {
+                if (current._properties.hasOwnProperty(key)) {
+                    return current;
+                }
+                current = current._parent;
+            }
+            return null;
+        };
+        Zone.prototype.fork = function (zoneSpec) {
+            if (!zoneSpec)
+                throw new Error('ZoneSpec required!');
+            return this._zoneDelegate.fork(this, zoneSpec);
+        };
+        Zone.prototype.wrap = function (callback, source) {
+            if (typeof callback !== 'function') {
+                throw new Error('Expecting function got: ' + callback);
+            }
+            var _callback = this._zoneDelegate.intercept(this, callback, source);
+            var zone = this;
+            return function () {
+                return zone.runGuarded(_callback, this, arguments, source);
+            };
+        };
+        Zone.prototype.run = function (callback, applyThis, applyArgs, source) {
+            if (applyThis === void 0) { applyThis = undefined; }
+            if (applyArgs === void 0) { applyArgs = null; }
+            if (source === void 0) { source = null; }
+            _currentZoneFrame = { parent: _currentZoneFrame, zone: this };
+            try {
+                return this._zoneDelegate.invoke(this, callback, applyThis, applyArgs, source);
+            }
+            finally {
+                _currentZoneFrame = _currentZoneFrame.parent;
+            }
+        };
+        Zone.prototype.runGuarded = function (callback, applyThis, applyArgs, source) {
+            if (applyThis === void 0) { applyThis = null; }
+            if (applyArgs === void 0) { applyArgs = null; }
+            if (source === void 0) { source = null; }
+            _currentZoneFrame = { parent: _currentZoneFrame, zone: this };
+            try {
+                try {
+                    return this._zoneDelegate.invoke(this, callback, applyThis, applyArgs, source);
+                }
+                catch (error) {
+                    if (this._zoneDelegate.handleError(this, error)) {
+                        throw error;
+                    }
+                }
+            }
+            finally {
+                _currentZoneFrame = _currentZoneFrame.parent;
+            }
+        };
+        Zone.prototype.runTask = function (task, applyThis, applyArgs) {
+            if (task.zone != this) {
+                throw new Error('A task can only be run in the zone of creation! (Creation: ' +
+                    (task.zone || NO_ZONE).name + '; Execution: ' + this.name + ')');
+            }
+            // https://github.com/angular/zone.js/issues/778, sometimes eventTask
+            // will run in notScheduled(canceled) state, we should not try to
+            // run such kind of task but just return
+            // we have to define an variable here, if not
+            // typescript compiler will complain below
+            var isNotScheduled = task.state === notScheduled;
+            if (isNotScheduled && task.type === eventTask) {
+                return;
+            }
+            var reEntryGuard = task.state != running;
+            reEntryGuard && task._transitionTo(running, scheduled);
+            task.runCount++;
+            var previousTask = _currentTask;
+            _currentTask = task;
+            _currentZoneFrame = { parent: _currentZoneFrame, zone: this };
+            try {
+                if (task.type == macroTask && task.data && !task.data.isPeriodic) {
+                    task.cancelFn = null;
+                }
+                try {
+                    return this._zoneDelegate.invokeTask(this, task, applyThis, applyArgs);
+                }
+                catch (error) {
+                    if (this._zoneDelegate.handleError(this, error)) {
+                        throw error;
+                    }
+                }
+            }
+            finally {
+                // if the task's state is notScheduled or unknown, then it has already been cancelled
+                // we should not reset the state to scheduled
+                if (task.state !== notScheduled && task.state !== unknown) {
+                    if (task.type == eventTask || (task.data && task.data.isPeriodic)) {
+                        reEntryGuard && task._transitionTo(scheduled, running);
+                    }
+                    else {
+                        task.runCount = 0;
+                        this._updateTaskCount(task, -1);
+                        reEntryGuard &&
+                            task._transitionTo(notScheduled, running, notScheduled);
+                    }
+                }
+                _currentZoneFrame = _currentZoneFrame.parent;
+                _currentTask = previousTask;
+            }
+        };
+        Zone.prototype.scheduleTask = function (task) {
+            if (task.zone && task.zone !== this) {
+                // check if the task was rescheduled, the newZone
+                // should not be the children of the original zone
+                var newZone = this;
+                while (newZone) {
+                    if (newZone === task.zone) {
+                        throw Error("can not reschedule task to " + this
+                            .name + " which is descendants of the original zone " + task.zone.name);
+                    }
+                    newZone = newZone.parent;
+                }
+            }
+            task._transitionTo(scheduling, notScheduled);
+            var zoneDelegates = [];
+            task._zoneDelegates = zoneDelegates;
+            task._zone = this;
+            try {
+                task = this._zoneDelegate.scheduleTask(this, task);
+            }
+            catch (err) {
+                // should set task's state to unknown when scheduleTask throw error
+                // because the err may from reschedule, so the fromState maybe notScheduled
+                task._transitionTo(unknown, scheduling, notScheduled);
+                // TODO: @JiaLiPassion, should we check the result from handleError?
+                this._zoneDelegate.handleError(this, err);
+                throw err;
+            }
+            if (task._zoneDelegates === zoneDelegates) {
+                // we have to check because internally the delegate can reschedule the task.
+                this._updateTaskCount(task, 1);
+            }
+            if (task.state == scheduling) {
+                task._transitionTo(scheduled, scheduling);
+            }
+            return task;
+        };
+        Zone.prototype.scheduleMicroTask = function (source, callback, data, customSchedule) {
+            return this.scheduleTask(new ZoneTask(microTask, source, callback, data, customSchedule, null));
+        };
+        Zone.prototype.scheduleMacroTask = function (source, callback, data, customSchedule, customCancel) {
+            return this.scheduleTask(new ZoneTask(macroTask, source, callback, data, customSchedule, customCancel));
+        };
+        Zone.prototype.scheduleEventTask = function (source, callback, data, customSchedule, customCancel) {
+            return this.scheduleTask(new ZoneTask(eventTask, source, callback, data, customSchedule, customCancel));
+        };
+        Zone.prototype.cancelTask = function (task) {
+            if (task.zone != this)
+                throw new Error('A task can only be cancelled in the zone of creation! (Creation: ' +
+                    (task.zone || NO_ZONE).name + '; Execution: ' + this.name + ')');
+            task._transitionTo(canceling, scheduled, running);
+            try {
+                this._zoneDelegate.cancelTask(this, task);
+            }
+            catch (err) {
+                // if error occurs when cancelTask, transit the state to unknown
+                task._transitionTo(unknown, canceling);
+                this._zoneDelegate.handleError(this, err);
+                throw err;
+            }
+            this._updateTaskCount(task, -1);
+            task._transitionTo(notScheduled, canceling);
+            task.runCount = 0;
+            return task;
+        };
+        Zone.prototype._updateTaskCount = function (task, count) {
+            var zoneDelegates = task._zoneDelegates;
+            if (count == -1) {
+                task._zoneDelegates = null;
+            }
+            for (var i = 0; i < zoneDelegates.length; i++) {
+                zoneDelegates[i]._updateTaskCount(task.type, count);
+            }
+        };
+        return Zone;
+    }());
+    Zone.__symbol__ = __symbol__;
+    var DELEGATE_ZS = {
+        name: '',
+        onHasTask: function (delegate, _, target, hasTaskState) {
+            return delegate.hasTask(target, hasTaskState);
+        },
+        onScheduleTask: function (delegate, _, target, task) {
+            return delegate.scheduleTask(target, task);
+        },
+        onInvokeTask: function (delegate, _, target, task, applyThis, applyArgs) { return delegate.invokeTask(target, task, applyThis, applyArgs); },
+        onCancelTask: function (delegate, _, target, task) {
+            return delegate.cancelTask(target, task);
+        }
+    };
+    var ZoneDelegate = (function () {
+        function ZoneDelegate(zone, parentDelegate, zoneSpec) {
+            this._taskCounts = { 'microTask': 0, 'macroTask': 0, 'eventTask': 0 };
+            this.zone = zone;
+            this._parentDelegate = parentDelegate;
+            this._forkZS = zoneSpec && (zoneSpec && zoneSpec.onFork ? zoneSpec : parentDelegate._forkZS);
+            this._forkDlgt = zoneSpec && (zoneSpec.onFork ? parentDelegate : parentDelegate._forkDlgt);
+            this._forkCurrZone = zoneSpec && (zoneSpec.onFork ? this.zone : parentDelegate.zone);
+            this._interceptZS =
+                zoneSpec && (zoneSpec.onIntercept ? zoneSpec : parentDelegate._interceptZS);
+            this._interceptDlgt =
+                zoneSpec && (zoneSpec.onIntercept ? parentDelegate : parentDelegate._interceptDlgt);
+            this._interceptCurrZone =
+                zoneSpec && (zoneSpec.onIntercept ? this.zone : parentDelegate.zone);
+            this._invokeZS = zoneSpec && (zoneSpec.onInvoke ? zoneSpec : parentDelegate._invokeZS);
+            this._invokeDlgt =
+                zoneSpec && (zoneSpec.onInvoke ? parentDelegate : parentDelegate._invokeDlgt);
+            this._invokeCurrZone = zoneSpec && (zoneSpec.onInvoke ? this.zone : parentDelegate.zone);
+            this._handleErrorZS =
+                zoneSpec && (zoneSpec.onHandleError ? zoneSpec : parentDelegate._handleErrorZS);
+            this._handleErrorDlgt =
+                zoneSpec && (zoneSpec.onHandleError ? parentDelegate : parentDelegate._handleErrorDlgt);
+            this._handleErrorCurrZone =
+                zoneSpec && (zoneSpec.onHandleError ? this.zone : parentDelegate.zone);
+            this._scheduleTaskZS =
+                zoneSpec && (zoneSpec.onScheduleTask ? zoneSpec : parentDelegate._scheduleTaskZS);
+            this._scheduleTaskDlgt =
+                zoneSpec && (zoneSpec.onScheduleTask ? parentDelegate : parentDelegate._scheduleTaskDlgt);
+            this._scheduleTaskCurrZone =
+                zoneSpec && (zoneSpec.onScheduleTask ? this.zone : parentDelegate.zone);
+            this._invokeTaskZS =
+                zoneSpec && (zoneSpec.onInvokeTask ? zoneSpec : parentDelegate._invokeTaskZS);
+            this._invokeTaskDlgt =
+                zoneSpec && (zoneSpec.onInvokeTask ? parentDelegate : parentDelegate._invokeTaskDlgt);
+            this._invokeTaskCurrZone =
+                zoneSpec && (zoneSpec.onInvokeTask ? this.zone : parentDelegate.zone);
+            this._cancelTaskZS =
+                zoneSpec && (zoneSpec.onCancelTask ? zoneSpec : parentDelegate._cancelTaskZS);
+            this._cancelTaskDlgt =
+                zoneSpec && (zoneSpec.onCancelTask ? parentDelegate : parentDelegate._cancelTaskDlgt);
+            this._cancelTaskCurrZone =
+                zoneSpec && (zoneSpec.onCancelTask ? this.zone : parentDelegate.zone);
+            this._hasTaskZS = null;
+            this._hasTaskDlgt = null;
+            this._hasTaskDlgtOwner = null;
+            this._hasTaskCurrZone = null;
+            var zoneSpecHasTask = zoneSpec && zoneSpec.onHasTask;
+            var parentHasTask = parentDelegate && parentDelegate._hasTaskZS;
+            if (zoneSpecHasTask || parentHasTask) {
+                // If we need to report hasTask, than this ZS needs to do ref counting on tasks. In such
+                // a case all task related interceptors must go through this ZD. We can't short circuit it.
+                this._hasTaskZS = zoneSpecHasTask ? zoneSpec : DELEGATE_ZS;
+                this._hasTaskDlgt = parentDelegate;
+                this._hasTaskDlgtOwner = this;
+                this._hasTaskCurrZone = zone;
+                if (!zoneSpec.onScheduleTask) {
+                    this._scheduleTaskZS = DELEGATE_ZS;
+                    this._scheduleTaskDlgt = parentDelegate;
+                    this._scheduleTaskCurrZone = this.zone;
+                }
+                if (!zoneSpec.onInvokeTask) {
+                    this._invokeTaskZS = DELEGATE_ZS;
+                    this._invokeTaskDlgt = parentDelegate;
+                    this._invokeTaskCurrZone = this.zone;
+                }
+                if (!zoneSpec.onCancelTask) {
+                    this._cancelTaskZS = DELEGATE_ZS;
+                    this._cancelTaskDlgt = parentDelegate;
+                    this._cancelTaskCurrZone = this.zone;
+                }
+            }
+        }
+        ZoneDelegate.prototype.fork = function (targetZone, zoneSpec) {
+            return this._forkZS ? this._forkZS.onFork(this._forkDlgt, this.zone, targetZone, zoneSpec) :
+                new Zone(targetZone, zoneSpec);
+        };
+        ZoneDelegate.prototype.intercept = function (targetZone, callback, source) {
+            return this._interceptZS ?
+                this._interceptZS.onIntercept(this._interceptDlgt, this._interceptCurrZone, targetZone, callback, source) :
+                callback;
+        };
+        ZoneDelegate.prototype.invoke = function (targetZone, callback, applyThis, applyArgs, source) {
+            return this._invokeZS ?
+                this._invokeZS.onInvoke(this._invokeDlgt, this._invokeCurrZone, targetZone, callback, applyThis, applyArgs, source) :
+                callback.apply(applyThis, applyArgs);
+        };
+        ZoneDelegate.prototype.handleError = function (targetZone, error) {
+            return this._handleErrorZS ?
+                this._handleErrorZS.onHandleError(this._handleErrorDlgt, this._handleErrorCurrZone, targetZone, error) :
+                true;
+        };
+        ZoneDelegate.prototype.scheduleTask = function (targetZone, task) {
+            var returnTask = task;
+            if (this._scheduleTaskZS) {
+                if (this._hasTaskZS) {
+                    returnTask._zoneDelegates.push(this._hasTaskDlgtOwner);
+                }
+                returnTask = this._scheduleTaskZS.onScheduleTask(this._scheduleTaskDlgt, this._scheduleTaskCurrZone, targetZone, task);
+                if (!returnTask)
+                    returnTask = task;
+            }
+            else {
+                if (task.scheduleFn) {
+                    task.scheduleFn(task);
+                }
+                else if (task.type == microTask) {
+                    scheduleMicroTask(task);
+                }
+                else {
+                    throw new Error('Task is missing scheduleFn.');
+                }
+            }
+            return returnTask;
+        };
+        ZoneDelegate.prototype.invokeTask = function (targetZone, task, applyThis, applyArgs) {
+            return this._invokeTaskZS ?
+                this._invokeTaskZS.onInvokeTask(this._invokeTaskDlgt, this._invokeTaskCurrZone, targetZone, task, applyThis, applyArgs) :
+                task.callback.apply(applyThis, applyArgs);
+        };
+        ZoneDelegate.prototype.cancelTask = function (targetZone, task) {
+            var value;
+            if (this._cancelTaskZS) {
+                value = this._cancelTaskZS.onCancelTask(this._cancelTaskDlgt, this._cancelTaskCurrZone, targetZone, task);
+            }
+            else {
+                if (!task.cancelFn) {
+                    throw Error('Task is not cancelable');
+                }
+                value = task.cancelFn(task);
+            }
+            return value;
+        };
+        ZoneDelegate.prototype.hasTask = function (targetZone, isEmpty) {
+            // hasTask should not throw error so other ZoneDelegate
+            // can still trigger hasTask callback
+            try {
+                return this._hasTaskZS &&
+                    this._hasTaskZS.onHasTask(this._hasTaskDlgt, this._hasTaskCurrZone, targetZone, isEmpty);
+            }
+            catch (err) {
+                this.handleError(targetZone, err);
+            }
+        };
+        ZoneDelegate.prototype._updateTaskCount = function (type, count) {
+            var counts = this._taskCounts;
+            var prev = counts[type];
+            var next = counts[type] = prev + count;
+            if (next < 0) {
+                return; // throw new Error('More tasks executed then were scheduled.');
+            }
+            if (prev == 0 || next == 0) {
+                var isEmpty = {
+                    microTask: counts.microTask > 0,
+                    macroTask: counts.macroTask > 0,
+                    eventTask: counts.eventTask > 0,
+                    change: type
+                };
+                this.hasTask(this.zone, isEmpty);
+            }
+        };
+        return ZoneDelegate;
+    }());
+    var ZoneTask = (function () {
+        function ZoneTask(type, source, callback, options, scheduleFn, cancelFn) {
+            this._zone = null;
+            this.runCount = 0;
+            this._zoneDelegates = null;
+            this._state = 'notScheduled';
+            this.type = type;
+            this.source = source;
+            this.data = options;
+            this.scheduleFn = scheduleFn;
+            this.cancelFn = cancelFn;
+            this.callback = callback;
+            var self = this;
+            this.invoke = function () {
+                _numberOfNestedTaskFrames++;
+                try {
+                    self.runCount++;
+                    return self.zone.runTask(self, this, arguments);
+                }
+                finally {
+                    if (_numberOfNestedTaskFrames == 1) {
+                        drainMicroTaskQueue();
+                    }
+                    _numberOfNestedTaskFrames--;
+                }
+            };
+        }
+        Object.defineProperty(ZoneTask.prototype, "zone", {
+            get: function () {
+                return this._zone;
+            },
+            enumerable: true,
+            configurable: true
+        });
+        Object.defineProperty(ZoneTask.prototype, "state", {
+            get: function () {
+                return this._state;
+            },
+            enumerable: true,
+            configurable: true
+        });
+        ZoneTask.prototype.cancelScheduleRequest = function () {
+            this._transitionTo(notScheduled, scheduling);
+        };
+        ZoneTask.prototype._transitionTo = function (toState, fromState1, fromState2) {
+            if (this._state === fromState1 || this._state === fromState2) {
+                this._state = toState;
+                if (toState == notScheduled) {
+                    this._zoneDelegates = null;
+                }
+            }
+            else {
+                throw new Error(this.type + " '" + this.source + "': can not transition to '" + toState + "', expecting state '" + fromState1 + "'" + (fromState2 ?
+                    ' or \'' + fromState2 + '\'' :
+                    '') + ", was '" + this._state + "'.");
+            }
+        };
+        ZoneTask.prototype.toString = function () {
+            if (this.data && typeof this.data.handleId !== 'undefined') {
+                return this.data.handleId;
+            }
+            else {
+                return Object.prototype.toString.call(this);
+            }
+        };
+        // add toJSON method to prevent cyclic error when
+        // call JSON.stringify(zoneTask)
+        ZoneTask.prototype.toJSON = function () {
+            return {
+                type: this.type,
+                state: this.state,
+                source: this.source,
+                zone: this.zone.name,
+                invoke: this.invoke,
+                scheduleFn: this.scheduleFn,
+                cancelFn: this.cancelFn,
+                runCount: this.runCount,
+                callback: this.callback
+            };
+        };
+        return ZoneTask;
+    }());
+    //////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////
+    ///  MICROTASK QUEUE
+    //////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////
+    var symbolSetTimeout = __symbol__('setTimeout');
+    var symbolPromise = __symbol__('Promise');
+    var symbolThen = __symbol__('then');
+    var _microTaskQueue = [];
+    var _isDrainingMicrotaskQueue = false;
+    function scheduleMicroTask(task) {
+        // if we are not running in any task, and there has not been anything scheduled
+        // we must bootstrap the initial task creation by manually scheduling the drain
+        if (_numberOfNestedTaskFrames === 0 && _microTaskQueue.length === 0) {
+            // We are not running in Task, so we need to kickstart the microtask queue.
+            if (global[symbolPromise]) {
+                global[symbolPromise].resolve(0)[symbolThen](drainMicroTaskQueue);
+            }
+            else {
+                global[symbolSetTimeout](drainMicroTaskQueue, 0);
+            }
+        }
+        task && _microTaskQueue.push(task);
+    }
+    function drainMicroTaskQueue() {
+        if (!_isDrainingMicrotaskQueue) {
+            _isDrainingMicrotaskQueue = true;
+            while (_microTaskQueue.length) {
+                var queue = _microTaskQueue;
+                _microTaskQueue = [];
+                for (var i = 0; i < queue.length; i++) {
+                    var task = queue[i];
+                    try {
+                        task.zone.runTask(task, null, null);
+                    }
+                    catch (error) {
+                        _api.onUnhandledError(error);
+                    }
+                }
+            }
+            var showError = !Zone[__symbol__('ignoreConsoleErrorUncaughtError')];
+            _api.microtaskDrainDone();
+            _isDrainingMicrotaskQueue = false;
+        }
+    }
+    //////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////
+    ///  BOOTSTRAP
+    //////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////
+    var NO_ZONE = { name: 'NO ZONE' };
+    var notScheduled = 'notScheduled', scheduling = 'scheduling', scheduled = 'scheduled', running = 'running', canceling = 'canceling', unknown = 'unknown';
+    var microTask = 'microTask', macroTask = 'macroTask', eventTask = 'eventTask';
+    var patches = {};
+    var _api = {
+        symbol: __symbol__,
+        currentZoneFrame: function () { return _currentZoneFrame; },
+        onUnhandledError: noop,
+        microtaskDrainDone: noop,
+        scheduleMicroTask: scheduleMicroTask,
+        showUncaughtError: function () { return !Zone[__symbol__('ignoreConsoleErrorUncaughtError')]; },
+        patchEventTargetMethods: function () { return false; },
+        patchOnProperties: noop,
+        patchMethod: function () { return noop; }
+    };
+    var symbolRootZoneSpec = '__rootZoneSpec__';
+    var rootZone = new Zone(null, null);
+    if (global[symbolRootZoneSpec]) {
+        rootZone = rootZone.fork(global[symbolRootZoneSpec]);
+        delete global[symbolRootZoneSpec];
+    }
+    var _currentZoneFrame = { parent: null, zone: rootZone };
+    var _currentTask = null;
+    var _numberOfNestedTaskFrames = 0;
+    function noop() { }
+    function __symbol__(name) {
+        return '__zone_symbol__' + name;
+    }
+    performanceMeasure('Zone', 'Zone');
+    return global['Zone'] = Zone;
+})(typeof window !== 'undefined' && window || typeof self !== 'undefined' && self || global);
+
+/**
+ * @license
+ * Copyright Google Inc. All Rights Reserved.
+ *
+ * Use of this source code is governed by an MIT-style license that can be
+ * found in the LICENSE file at https://angular.io/license
+ */
+Zone.__load_patch('ZoneAwarePromise', function (global, Zone, api) {
+    var __symbol__ = api.symbol;
+    var _uncaughtPromiseErrors = [];
+    var symbolPromise = __symbol__('Promise');
+    var symbolThen = __symbol__('then');
+    api.onUnhandledError = function (e) {
+        if (api.showUncaughtError()) {
+            var rejection = e && e.rejection;
+            if (rejection) {
+                console.error('Unhandled Promise rejection:', rejection instanceof Error ? rejection.message : rejection, '; Zone:', e.zone.name, '; Task:', e.task && e.task.source, '; Value:', rejection, rejection instanceof Error ? rejection.stack : undefined);
+            }
+            else {
+                console.error(e);
+            }
+        }
+    };
+    api.microtaskDrainDone = function () {
+        while (_uncaughtPromiseErrors.length) {
+            var _loop_1 = function () {
+                var uncaughtPromiseError = _uncaughtPromiseErrors.shift();
+                try {
+                    uncaughtPromiseError.zone.runGuarded(function () {
+                        throw uncaughtPromiseError;
+                    });
+                }
+                catch (error) {
+                    handleUnhandledRejection(error);
+                }
+            };
+            while (_uncaughtPromiseErrors.length) {
+                _loop_1();
+            }
+        }
+    };
+    function handleUnhandledRejection(e) {
+        api.onUnhandledError(e);
+        try {
+            var handler = Zone[__symbol__('unhandledPromiseRejectionHandler')];
+            if (handler && typeof handler === 'function') {
+                handler.apply(this, [e]);
+            }
+        }
+        catch (err) {
+        }
+    }
+    function isThenable(value) {
+        return value && value.then;
+    }
+    function forwardResolution(value) {
+        return value;
+    }
+    function forwardRejection(rejection) {
+        return ZoneAwarePromise.reject(rejection);
+    }
+    var symbolState = __symbol__('state');
+    var symbolValue = __symbol__('value');
+    var source = 'Promise.then';
+    var UNRESOLVED = null;
+    var RESOLVED = true;
+    var REJECTED = false;
+    var REJECTED_NO_CATCH = 0;
+    function makeResolver(promise, state) {
+        return function (v) {
+            try {
+                resolvePromise(promise, state, v);
+            }
+            catch (err) {
+                resolvePromise(promise, false, err);
+            }
+            // Do not return value or you will break the Promise spec.
+        };
+    }
+    var once = function () {
+        var wasCalled = false;
+        return function wrapper(wrappedFunction) {
+            return function () {
+                if (wasCalled) {
+                    return;
+                }
+                wasCalled = true;
+                wrappedFunction.apply(null, arguments);
+            };
+        };
+    };
+    // Promise Resolution
+    function resolvePromise(promise, state, value) {
+        var onceWrapper = once();
+        if (promise === value) {
+            throw new TypeError('Promise resolved with itself');
+        }
+        if (promise[symbolState] === UNRESOLVED) {
+            // should only get value.then once based on promise spec.
+            var then = null;
+            try {
+                if (typeof value === 'object' || typeof value === 'function') {
+                    then = value && value.then;
+                }
+            }
+            catch (err) {
+                onceWrapper(function () {
+                    resolvePromise(promise, false, err);
+                })();
+                return promise;
+            }
+            // if (value instanceof ZoneAwarePromise) {
+            if (state !== REJECTED && value instanceof ZoneAwarePromise &&
+                value.hasOwnProperty(symbolState) && value.hasOwnProperty(symbolValue) &&
+                value[symbolState] !== UNRESOLVED) {
+                clearRejectedNoCatch(value);
+                resolvePromise(promise, value[symbolState], value[symbolValue]);
+            }
+            else if (state !== REJECTED && typeof then === 'function') {
+                try {
+                    then.apply(value, [
+                        onceWrapper(makeResolver(promise, state)), onceWrapper(makeResolver(promise, false))
+                    ]);
+                }
+                catch (err) {
+                    onceWrapper(function () {
+                        resolvePromise(promise, false, err);
+                    })();
+                }
+            }
+            else {
+                promise[symbolState] = state;
+                var queue = promise[symbolValue];
+                promise[symbolValue] = value;
+                // record task information in value when error occurs, so we can
+                // do some additional work such as render longStackTrace
+                if (state === REJECTED && value instanceof Error) {
+                    value[__symbol__('currentTask')] = Zone.currentTask;
+                }
+                for (var i = 0; i < queue.length;) {
+                    scheduleResolveOrReject(promise, queue[i++], queue[i++], queue[i++], queue[i++]);
+                }
+                if (queue.length == 0 && state == REJECTED) {
+                    promise[symbolState] = REJECTED_NO_CATCH;
+                    try {
+                        throw new Error('Uncaught (in promise): ' + value +
+                            (value && value.stack ? '\n' + value.stack : ''));
+                    }
+                    catch (err) {
+                        var error_1 = err;
+                        error_1.rejection = value;
+                        error_1.promise = promise;
+                        error_1.zone = Zone.current;
+                        error_1.task = Zone.currentTask;
+                        _uncaughtPromiseErrors.push(error_1);
+                        api.scheduleMicroTask(); // to make sure that it is running
+                    }
+                }
+            }
+        }
+        // Resolving an already resolved promise is a noop.
+        return promise;
+    }
+    function clearRejectedNoCatch(promise) {
+        if (promise[symbolState] === REJECTED_NO_CATCH) {
+            // if the promise is rejected no catch status
+            // and queue.length > 0, means there is a error handler
+            // here to handle the rejected promise, we should trigger
+            // windows.rejectionhandled eventHandler or nodejs rejectionHandled
+            // eventHandler
+            try {
+                var handler = Zone[__symbol__('rejectionHandledHandler')];
+                if (handler && typeof handler === 'function') {
+                    handler.apply(this, [{ rejection: promise[symbolValue], promise: promise }]);
+                }
+            }
+            catch (err) {
+            }
+            promise[symbolState] = REJECTED;
+            for (var i = 0; i < _uncaughtPromiseErrors.length; i++) {
+                if (promise === _uncaughtPromiseErrors[i].promise) {
+                    _uncaughtPromiseErrors.splice(i, 1);
+                }
+            }
+        }
+    }
+    function scheduleResolveOrReject(promise, zone, chainPromise, onFulfilled, onRejected) {
+        clearRejectedNoCatch(promise);
+        var delegate = promise[symbolState] ?
+            (typeof onFulfilled === 'function') ? onFulfilled : forwardResolution :
+            (typeof onRejected === 'function') ? onRejected : forwardRejection;
+        zone.scheduleMicroTask(source, function () {
+            try {
+                resolvePromise(chainPromise, true, zone.run(delegate, undefined, [promise[symbolValue]]));
+            }
+            catch (error) {
+                resolvePromise(chainPromise, false, error);
+            }
+        });
+    }
+    var ZoneAwarePromise = (function () {
+        function ZoneAwarePromise(executor) {
+            var promise = this;
+            if (!(promise instanceof ZoneAwarePromise)) {
+                throw new Error('Must be an instanceof Promise.');
+            }
+            promise[symbolState] = UNRESOLVED;
+            promise[symbolValue] = []; // queue;
+            try {
+                executor && executor(makeResolver(promise, RESOLVED), makeResolver(promise, REJECTED));
+            }
+            catch (error) {
+                resolvePromise(promise, false, error);
+            }
+        }
+        ZoneAwarePromise.toString = function () {
+            return 'function ZoneAwarePromise() { [native code] }';
+        };
+        ZoneAwarePromise.resolve = function (value) {
+            return resolvePromise(new this(null), RESOLVED, value);
+        };
+        ZoneAwarePromise.reject = function (error) {
+            return resolvePromise(new this(null), REJECTED, error);
+        };
+        ZoneAwarePromise.race = function (values) {
+            var resolve;
+            var reject;
+            var promise = new this(function (res, rej) {
+                _a = [res, rej], resolve = _a[0], reject = _a[1];
+                var _a;
+            });
+            function onResolve(value) {
+                promise && (promise = null || resolve(value));
+            }
+            function onReject(error) {
+                promise && (promise = null || reject(error));
+            }
+            for (var _i = 0, values_1 = values; _i < values_1.length; _i++) {
+                var value = values_1[_i];
+                if (!isThenable(value)) {
+                    value = this.resolve(value);
+                }
+                value.then(onResolve, onReject);
+            }
+            return promise;
+        };
+        ZoneAwarePromise.all = function (values) {
+            var resolve;
+            var reject;
+            var promise = new this(function (res, rej) {
+                resolve = res;
+                reject = rej;
+            });
+            var count = 0;
+            var resolvedValues = [];
+            for (var _i = 0, values_2 = values; _i < values_2.length; _i++) {
+                var value = values_2[_i];
+                if (!isThenable(value)) {
+                    value = this.resolve(value);
+                }
+                value.then((function (index) { return function (value) {
+                    resolvedValues[index] = value;
+                    count--;
+                    if (!count) {
+                        resolve(resolvedValues);
+                    }
+                }; })(count), reject);
+                count++;
+            }
+            if (!count)
+                resolve(resolvedValues);
+            return promise;
+        };
+        ZoneAwarePromise.prototype.then = function (onFulfilled, onRejected) {
+            var chainPromise = new this.constructor(null);
+            var zone = Zone.current;
+            if (this[symbolState] == UNRESOLVED) {
+                this[symbolValue].push(zone, chainPromise, onFulfilled, onRejected);
+            }
+            else {
+                scheduleResolveOrReject(this, zone, chainPromise, onFulfilled, onRejected);
+            }
+            return chainPromise;
+        };
+        ZoneAwarePromise.prototype.catch = function (onRejected) {
+            return this.then(null, onRejected);
+        };
+        return ZoneAwarePromise;
+    }());
+    // Protect against aggressive optimizers dropping seemingly unused properties.
+    // E.g. Closure Compiler in advanced mode.
+    ZoneAwarePromise['resolve'] = ZoneAwarePromise.resolve;
+    ZoneAwarePromise['reject'] = ZoneAwarePromise.reject;
+    ZoneAwarePromise['race'] = ZoneAwarePromise.race;
+    ZoneAwarePromise['all'] = ZoneAwarePromise.all;
+    var NativePromise = global[symbolPromise] = global['Promise'];
+    global['Promise'] = ZoneAwarePromise;
+    var symbolThenPatched = __symbol__('thenPatched');
+    function patchThen(Ctor) {
+        var proto = Ctor.prototype;
+        var originalThen = proto.then;
+        // Keep a reference to the original method.
+        proto[symbolThen] = originalThen;
+        Ctor.prototype.then = function (onResolve, onReject) {
+            var _this = this;
+            var wrapped = new ZoneAwarePromise(function (resolve, reject) {
+                originalThen.call(_this, resolve, reject);
+            });
+            return wrapped.then(onResolve, onReject);
+        };
+        Ctor[symbolThenPatched] = true;
+    }
+    function zoneify(fn) {
+        return function () {
+            var resultPromise = fn.apply(this, arguments);
+            if (resultPromise instanceof ZoneAwarePromise) {
+                return resultPromise;
+            }
+            var ctor = resultPromise.constructor;
+            if (!ctor[symbolThenPatched]) {
+                patchThen(ctor);
+            }
+            return resultPromise;
+        };
+    }
+    if (NativePromise) {
+        patchThen(NativePromise);
+        var fetch_1 = global['fetch'];
+        if (typeof fetch_1 == 'function') {
+            global['fetch'] = zoneify(fetch_1);
+        }
+    }
+    // This is not part of public API, but it is useful for tests, so we expose it.
+    Promise[Zone.__symbol__('uncaughtPromiseErrors')] = _uncaughtPromiseErrors;
+    return ZoneAwarePromise;
+});
+
+/**
+ * @license
+ * Copyright Google Inc. All Rights Reserved.
+ *
+ * Use of this source code is governed by an MIT-style license that can be
+ * found in the LICENSE file at https://angular.io/license
+ */
+/**
+ * Suppress closure compiler errors about unknown 'Zone' variable
+ * @fileoverview
+ * @suppress {undefinedVars,globalThis}
+ */
+var zoneSymbol = function (n) { return "__zone_symbol__" + n; };
+var _global = typeof window === 'object' && window || typeof self === 'object' && self || global;
+function bindArguments(args, source) {
+    for (var i = args.length - 1; i >= 0; i--) {
+        if (typeof args[i] === 'function') {
+            args[i] = Zone.current.wrap(args[i], source + '_' + i);
+        }
+    }
+    return args;
+}
+function patchPrototype(prototype, fnNames) {
+    var source = prototype.constructor['name'];
+    var _loop_1 = function (i) {
+        var name_1 = fnNames[i];
+        var delegate = prototype[name_1];
+        if (delegate) {
+            prototype[name_1] = (function (delegate) {
+                var patched = function () {
+                    return delegate.apply(this, bindArguments(arguments, source + '.' + name_1));
+                };
+                attachOriginToPatched(patched, delegate);
+                return patched;
+            })(delegate);
+        }
+    };
+    for (var i = 0; i < fnNames.length; i++) {
+        _loop_1(i);
+    }
+}
+var isWebWorker = (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope);
+// Make sure to access `process` through `_global` so that WebPack does not accidently browserify
+// this code.
+var isNode = (!('nw' in _global) && typeof _global.process !== 'undefined' &&
+    {}.toString.call(_global.process) === '[object process]');
+var isBrowser = !isNode && !isWebWorker && !!(typeof window !== 'undefined' && window['HTMLElement']);
+// we are in electron of nw, so we are both browser and nodejs
+// Make sure to access `process` through `_global` so that WebPack does not accidently browserify
+// this code.
+var isMix = typeof _global.process !== 'undefined' &&
+    {}.toString.call(_global.process) === '[object process]' && !isWebWorker &&
+    !!(typeof window !== 'undefined' && window['HTMLElement']);
+function patchProperty(obj, prop, prototype) {
+    var desc = Object.getOwnPropertyDescriptor(obj, prop);
+    if (!desc && prototype) {
+        // when patch window object, use prototype to check prop exist or not
+        var prototypeDesc = Object.getOwnPropertyDescriptor(prototype, prop);
+        if (prototypeDesc) {
+            desc = { enumerable: true, configurable: true };
+        }
+    }
+    // if the descriptor not exists or is not configurable
+    // just return
+    if (!desc || !desc.configurable) {
+        return;
+    }
+    // A property descriptor cannot have getter/setter and be writable
+    // deleting the writable and value properties avoids this error:
+    //
+    // TypeError: property descriptors must not specify a value or be writable when a
+    // getter or setter has been specified
+    delete desc.writable;
+    delete desc.value;
+    var originalDescGet = desc.get;
+    // substr(2) cuz 'onclick' -> 'click', etc
+    var eventName = prop.substr(2);
+    var _prop = zoneSymbol('_' + prop);
+    desc.set = function (newValue) {
+        // in some of windows's onproperty callback, this is undefined
+        // so we need to check it
+        var target = this;
+        if (!target && obj === _global) {
+            target = _global;
+        }
+        if (!target) {
+            return;
+        }
+        var previousValue = target[_prop];
+        if (previousValue) {
+            target.removeEventListener(eventName, previousValue);
+        }
+        if (typeof newValue === 'function') {
+            var wrapFn = function (event) {
+                var result = newValue.apply(this, arguments);
+                if (result != undefined && !result) {
+                    event.preventDefault();
+                }
+                return result;
+            };
+            target[_prop] = wrapFn;
+            target.addEventListener(eventName, wrapFn, false);
+        }
+        else {
+            target[_prop] = null;
+        }
+    };
+    // The getter would return undefined for unassigned properties but the default value of an
+    // unassigned property is null
+    desc.get = function () {
+        // in some of windows's onproperty callback, this is undefined
+        // so we need to check it
+        var target = this;
+        if (!target && obj === _global) {
+            target = _global;
+        }
+        if (!target) {
+            return null;
+        }
+        if (target.hasOwnProperty(_prop)) {
+            return target[_prop];
+        }
+        else if (originalDescGet) {
+            // result will be null when use inline event attribute,
+            // such as <button onclick="func();">OK</button>
+            // because the onclick function is internal raw uncompiled handler
+            // the onclick will be evaluated when first time event was triggered or
+            // the property is accessed, https://github.com/angular/zone.js/issues/525
+            // so we should use original native get to retrieve the handler
+            var value = originalDescGet && originalDescGet.apply(this);
+            if (value) {
+                desc.set.apply(this, [value]);
+                if (typeof target['removeAttribute'] === 'function') {
+                    target.removeAttribute(prop);
+                }
+                return value;
+            }
+        }
+        return null;
+    };
+    Object.defineProperty(obj, prop, desc);
+}
+function patchOnProperties(obj, properties, prototype) {
+    if (properties) {
+        for (var i = 0; i < properties.length; i++) {
+            patchProperty(obj, 'on' + properties[i], prototype);
+        }
+    }
+    else {
+        var onProperties = [];
+        for (var prop in obj) {
+            if (prop.substr(0, 2) == 'on') {
+                onProperties.push(prop);
+            }
+        }
+        for (var j = 0; j < onProperties.length; j++) {
+            patchProperty(obj, onProperties[j], prototype);
+        }
+    }
+}
+var EVENT_TASKS = zoneSymbol('eventTasks');
+// For EventTarget
+var ADD_EVENT_LISTENER = 'addEventListener';
+var REMOVE_EVENT_LISTENER = 'removeEventListener';
+// compare the EventListenerOptionsOrCapture
+// 1. if the options is usCapture: boolean, compare the useCpature values directly
+// 2. if the options is EventListerOptions, only compare the capture
+function compareEventListenerOptions(left, right) {
+    var leftCapture = (typeof left === 'boolean') ?
+        left :
+        ((typeof left === 'object') ? (left && left.capture) : false);
+    var rightCapture = (typeof right === 'boolean') ?
+        right :
+        ((typeof right === 'object') ? (right && right.capture) : false);
+    return !!leftCapture === !!rightCapture;
+}
+function findExistingRegisteredTask(target, handler, name, options, remove) {
+    var eventTasks = target[EVENT_TASKS];
+    if (eventTasks) {
+        for (var i = 0; i < eventTasks.length; i++) {
+            var eventTask = eventTasks[i];
+            var data = eventTask.data;
+            var listener = data.handler;
+            if ((data.handler === handler || listener.listener === handler) &&
+                compareEventListenerOptions(data.options, options) && data.eventName === name) {
+                if (remove) {
+                    eventTasks.splice(i, 1);
+                }
+                return eventTask;
+            }
+        }
+    }
+    return null;
+}
+function findAllExistingRegisteredTasks(target, name, remove) {
+    var eventTasks = target[EVENT_TASKS];
+    if (eventTasks) {
+        var result = [];
+        for (var i = eventTasks.length - 1; i >= 0; i--) {
+            var eventTask = eventTasks[i];
+            var data = eventTask.data;
+            if (data.eventName === name) {
+                result.push(eventTask);
+                if (remove) {
+                    eventTasks.splice(i, 1);
+                }
+            }
+        }
+        return result;
+    }
+    return null;
+}
+function attachRegisteredEvent(target, eventTask, isPrepend) {
+    var eventTasks = target[EVENT_TASKS];
+    if (!eventTasks) {
+        eventTasks = target[EVENT_TASKS] = [];
+    }
+    if (isPrepend) {
+        eventTasks.unshift(eventTask);
+    }
+    else {
+        eventTasks.push(eventTask);
+    }
+}
+var defaultListenerMetaCreator = function (self, args) {
+    return {
+        options: args[2],
+        eventName: args[0],
+        handler: args[1],
+        target: self || _global,
+        name: args[0],
+        crossContext: false,
+        invokeAddFunc: function (addFnSymbol, delegate) {
+            // check if the data is cross site context, if it is, fallback to
+            // remove the delegate directly and try catch error
+            if (!this.crossContext) {
+                if (delegate && delegate.invoke) {
+                    return this.target[addFnSymbol](this.eventName, delegate.invoke, this.options);
+                }
+                else {
+                    return this.target[addFnSymbol](this.eventName, delegate, this.options);
+                }
+            }
+            else {
+                // add a if/else branch here for performance concern, for most times
+                // cross site context is false, so we don't need to try/catch
+                try {
+                    return this.target[addFnSymbol](this.eventName, delegate, this.options);
+                }
+                catch (err) {
+                    // do nothing here is fine, because objects in a cross-site context are unusable
+                }
+            }
+        },
+        invokeRemoveFunc: function (removeFnSymbol, delegate) {
+            // check if the data is cross site context, if it is, fallback to
+            // remove the delegate directly and try catch error
+            if (!this.crossContext) {
+                if (delegate && delegate.invoke) {
+                    return this.target[removeFnSymbol](this.eventName, delegate.invoke, this.options);
+                }
+                else {
+                    return this.target[removeFnSymbol](this.eventName, delegate, this.options);
+                }
+            }
+            else {
+                // add a if/else branch here for performance concern, for most times
+                // cross site context is false, so we don't need to try/catch
+                try {
+                    return this.target[removeFnSymbol](this.eventName, delegate, this.options);
+                }
+                catch (err) {
+                    // do nothing here is fine, because objects in a cross-site context are unusable
+                }
+            }
+        }
+    };
+};
+function makeZoneAwareAddListener(addFnName, removeFnName, useCapturingParam, allowDuplicates, isPrepend, metaCreator) {
+    if (useCapturingParam === void 0) { useCapturingParam = true; }
+    if (allowDuplicates === void 0) { allowDuplicates = false; }
+    if (isPrepend === void 0) { isPrepend = false; }
+    if (metaCreator === void 0) { metaCreator = defaultListenerMetaCreator; }
+    var addFnSymbol = zoneSymbol(addFnName);
+    var removeFnSymbol = zoneSymbol(removeFnName);
+    var defaultUseCapturing = useCapturingParam ? false : undefined;
+    function scheduleEventListener(eventTask) {
+        var meta = eventTask.data;
+        attachRegisteredEvent(meta.target, eventTask, isPrepend);
+        return meta.invokeAddFunc(addFnSymbol, eventTask);
+    }
+    function cancelEventListener(eventTask) {
+        var meta = eventTask.data;
+        findExistingRegisteredTask(meta.target, eventTask.invoke, meta.eventName, meta.options, true);
+        return meta.invokeRemoveFunc(removeFnSymbol, eventTask);
+    }
+    return function zoneAwareAddListener(self, args) {
+        var data = metaCreator(self, args);
+        data.options = data.options || defaultUseCapturing;
+        // - Inside a Web Worker, `this` is undefined, the context is `global`
+        // - When `addEventListener` is called on the global context in strict mode, `this` is undefined
+        // see https://github.com/angular/zone.js/issues/190
+        var delegate = null;
+        if (typeof data.handler == 'function') {
+            delegate = data.handler;
+        }
+        else if (data.handler && data.handler.handleEvent) {
+            delegate = function (event) { return data.handler.handleEvent(event); };
+        }
+        var validZoneHandler = false;
+        try {
+            // In cross site contexts (such as WebDriver frameworks like Selenium),
+            // accessing the handler object here will cause an exception to be thrown which
+            // will fail tests prematurely.
+            validZoneHandler = data.handler && data.handler.toString() === '[object FunctionWrapper]';
+        }
+        catch (error) {
+            // we can still try to add the data.handler even we are in cross site context
+            data.crossContext = true;
+            return data.invokeAddFunc(addFnSymbol, data.handler);
+        }
+        // Ignore special listeners of IE11 & Edge dev tools, see
+        // https://github.com/angular/zone.js/issues/150
+        if (!delegate || validZoneHandler) {
+            return data.invokeAddFunc(addFnSymbol, data.handler);
+        }
+        if (!allowDuplicates) {
+            var eventTask = findExistingRegisteredTask(data.target, data.handler, data.eventName, data.options, false);
+            if (eventTask) {
+                // we already registered, so this will have noop.
+                return data.invokeAddFunc(addFnSymbol, eventTask);
+            }
+        }
+        var zone = Zone.current;
+        var source = data.target.constructor['name'] + '.' + addFnName + ':' + data.eventName;
+        zone.scheduleEventTask(source, delegate, data, scheduleEventListener, cancelEventListener);
+    };
+}
+function makeZoneAwareRemoveListener(fnName, useCapturingParam, metaCreator) {
+    if (useCapturingParam === void 0) { useCapturingParam = true; }
+    if (metaCreator === void 0) { metaCreator = defaultListenerMetaCreator; }
+    var symbol = zoneSymbol(fnName);
+    var defaultUseCapturing = useCapturingParam ? false : undefined;
+    return function zoneAwareRemoveListener(self, args) {
+        var data = metaCreator(self, args);
+        data.options = data.options || defaultUseCapturing;
+        // - Inside a Web Worker, `this` is undefined, the context is `global`
+        // - When `addEventListener` is called on the global context in strict mode, `this` is undefined
+        // see https://github.com/angular/zone.js/issues/190
+        var delegate = null;
+        if (typeof data.handler == 'function') {
+            delegate = data.handler;
+        }
+        else if (data.handler && data.handler.handleEvent) {
+            delegate = function (event) { return data.handler.handleEvent(event); };
+        }
+        var validZoneHandler = false;
+        try {
+            // In cross site contexts (such as WebDriver frameworks like Selenium),
+            // accessing the handler object here will cause an exception to be thrown which
+            // will fail tests prematurely.
+            validZoneHandler = data.handler && data.handler.toString() === '[object FunctionWrapper]';
+        }
+        catch (error) {
+            data.crossContext = true;
+            return data.invokeRemoveFunc(symbol, data.handler);
+        }
+        // Ignore special listeners of IE11 & Edge dev tools, see
+        // https://github.com/angular/zone.js/issues/150
+        if (!delegate || validZoneHandler) {
+            return data.invokeRemoveFunc(symbol, data.handler);
+        }
+        var eventTask = findExistingRegisteredTask(data.target, data.handler, data.eventName, data.options, true);
+        if (eventTask) {
+            eventTask.zone.cancelTask(eventTask);
+        }
+        else {
+            data.invokeRemoveFunc(symbol, data.handler);
+        }
+    };
+}
+
+
+function patchEventTargetMethods(obj, addFnName, removeFnName, metaCreator) {
+    if (addFnName === void 0) { addFnName = ADD_EVENT_LISTENER; }
+    if (removeFnName === void 0) { removeFnName = REMOVE_EVENT_LISTENER; }
+    if (metaCreator === void 0) { metaCreator = defaultListenerMetaCreator; }
+    if (obj && obj[addFnName]) {
+        patchMethod(obj, addFnName, function () { return makeZoneAwareAddListener(addFnName, removeFnName, true, false, false, metaCreator); });
+        patchMethod(obj, removeFnName, function () { return makeZoneAwareRemoveListener(removeFnName, true, metaCreator); });
+        return true;
+    }
+    else {
+        return false;
+    }
+}
+var originalInstanceKey = zoneSymbol('originalInstance');
+// wrap some native API on `window`
+function patchClass(className) {
+    var OriginalClass = _global[className];
+    if (!OriginalClass)
+        return;
+    // keep original class in global
+    _global[zoneSymbol(className)] = OriginalClass;
+    _global[className] = function () {
+        var a = bindArguments(arguments, className);
+        switch (a.length) {
+            case 0:
+                this[originalInstanceKey] = new OriginalClass();
+                break;
+            case 1:
+                this[originalInstanceKey] = new OriginalClass(a[0]);
+                break;
+            case 2:
+                this[originalInstanceKey] = new OriginalClass(a[0], a[1]);
+                break;
+            case 3:
+                this[originalInstanceKey] = new OriginalClass(a[0], a[1], a[2]);
+                break;
+            case 4:
+                this[originalInstanceKey] = new OriginalClass(a[0], a[1], a[2], a[3]);
+                break;
+            default:
+                throw new Error('Arg list too long.');
+        }
+    };
+    // attach original delegate to patched function
+    attachOriginToPatched(_global[className], OriginalClass);
+    var instance = new OriginalClass(function () { });
+    var prop;
+    for (prop in instance) {
+        // https://bugs.webkit.org/show_bug.cgi?id=44721
+        if (className === 'XMLHttpRequest' && prop === 'responseBlob')
+            continue;
+        (function (prop) {
+            if (typeof instance[prop] === 'function') {
+                _global[className].prototype[prop] = function () {
+                    return this[originalInstanceKey][prop].apply(this[originalInstanceKey], arguments);
+                };
+            }
+            else {
+                Object.defineProperty(_global[className].prototype, prop, {
+                    set: function (fn) {
+                        if (typeof fn === 'function') {
+                            this[originalInstanceKey][prop] = Zone.current.wrap(fn, className + '.' + prop);
+                            // keep callback in wrapped function so we can
+                            // use it in Function.prototype.toString to return
+                            // the native one.
+                            attachOriginToPatched(this[originalInstanceKey][prop], fn);
+                        }
+                        else {
+                            this[originalInstanceKey][prop] = fn;
+                        }
+                    },
+                    get: function () {
+                        return this[originalInstanceKey][prop];
+                    }
+                });
+            }
+        }(prop));
+    }
+    for (prop in OriginalClass) {
+        if (prop !== 'prototype' && OriginalClass.hasOwnProperty(prop)) {
+            _global[className][prop] = OriginalClass[prop];
+        }
+    }
+}
+function patchMethod(target, name, patchFn) {
+    var proto = target;
+    while (proto && !proto.hasOwnProperty(name)) {
+        proto = Object.getPrototypeOf(proto);
+    }
+    if (!proto && target[name]) {
+        // somehow we did not find it, but we can see it. This happens on IE for Window properties.
+        proto = target;
+    }
+    var delegateName = zoneSymbol(name);
+    var delegate;
+    if (proto && !(delegate = proto[delegateName])) {
+        delegate = proto[delegateName] = proto[name];
+        var patchDelegate_1 = patchFn(delegate, delegateName, name);
+        proto[name] = function () {
+            return patchDelegate_1(this, arguments);
+        };
+        attachOriginToPatched(proto[name], delegate);
+    }
+    return delegate;
+}
+// TODO: @JiaLiPassion, support cancel task later if necessary
+function patchMacroTask(obj, funcName, metaCreator) {
+    var setNative = null;
+    function scheduleTask(task) {
+        var data = task.data;
+        data.args[data.callbackIndex] = function () {
+            task.invoke.apply(this, arguments);
+        };
+        setNative.apply(data.target, data.args);
+        return task;
+    }
+    setNative = patchMethod(obj, funcName, function (delegate) { return function (self, args) {
+        var meta = metaCreator(self, args);
+        if (meta.callbackIndex >= 0 && typeof args[meta.callbackIndex] === 'function') {
+            var task = Zone.current.scheduleMacroTask(meta.name, args[meta.callbackIndex], meta, scheduleTask, null);
+            return task;
+        }
+        else {
+            // cause an error by calling it directly.
+            return delegate.apply(self, args);
+        }
+    }; });
+}
+
+function findEventTask(target, evtName) {
+    var eventTasks = target[zoneSymbol('eventTasks')];
+    var result = [];
+    if (eventTasks) {
+        for (var i = 0; i < eventTasks.length; i++) {
+            var eventTask = eventTasks[i];
+            var data = eventTask.data;
+            var eventName = data && data.eventName;
+            if (eventName === evtName) {
+                result.push(eventTask);
+            }
+        }
+    }
+    return result;
+}
+function attachOriginToPatched(patched, original) {
+    patched[zoneSymbol('OriginalDelegate')] = original;
+}
+
+/**
+ * @license
+ * Copyright Google Inc. All Rights Reserved.
+ *
+ * Use of this source code is governed by an MIT-style license that can be
+ * found in the LICENSE file at https://angular.io/license
+ */
+// override Function.prototype.toString to make zone.js patched function
+// look like native function
+Zone.__load_patch('toString', function (global, Zone, api) {
+    // patch Func.prototype.toString to let them look like native
+    var originalFunctionToString = Function.prototype.toString;
+    Function.prototype.toString = function () {
+        if (typeof this === 'function') {
+            var originalDelegate = this[zoneSymbol('OriginalDelegate')];
+            if (originalDelegate) {
+                if (typeof originalDelegate === 'function') {
+                    return originalFunctionToString.apply(this[zoneSymbol('OriginalDelegate')], arguments);
+                }
+                else {
+                    return Object.prototype.toString.call(originalDelegate);
+                }
+            }
+            if (this === Promise) {
+                var nativePromise = global[zoneSymbol('Promise')];
+                if (nativePromise) {
+                    return originalFunctionToString.apply(nativePromise, arguments);
+                }
+            }
+            if (this === Error) {
+                var nativeError = global[zoneSymbol('Error')];
+                if (nativeError) {
+                    return originalFunctionToString.apply(nativeError, arguments);
+                }
+            }
+        }
+        return originalFunctionToString.apply(this, arguments);
+    };
+    // patch Object.prototype.toString to let them look like native
+    var originalObjectToString = Object.prototype.toString;
+    Object.prototype.toString = function () {
+        if (this instanceof Promise) {
+            return '[object Promise]';
+        }
+        return originalObjectToString.apply(this, arguments);
+    };
+});
+
+/**
+ * @license
+ * Copyright Google Inc. All Rights Reserved.
+ *
+ * Use of this source code is governed by an MIT-style license that can be
+ * found in the LICENSE file at https://angular.io/license
+ */
+function patchTimer(window, setName, cancelName, nameSuffix) {
+    var setNative = null;
+    var clearNative = null;
+    setName += nameSuffix;
+    cancelName += nameSuffix;
+    var tasksByHandleId = {};
+    function scheduleTask(task) {
+        var data = task.data;
+        function timer() {
+            try {
+                task.invoke.apply(this, arguments);
+            }
+            finally {
+                if (typeof data.handleId === 'number') {
+                    // Node returns complex objects as handleIds
+                    delete tasksByHandleId[data.handleId];
+                }
+            }
+        }
+        data.args[0] = timer;
+        data.handleId = setNative.apply(window, data.args);
+        if (typeof data.handleId === 'number') {
+            // Node returns complex objects as handleIds -> no need to keep them around. Additionally,
+            // this throws an
+            // exception in older node versions and has no effect there, because of the stringified key.
+            tasksByHandleId[data.handleId] = task;
+        }
+        return task;
+    }
+    function clearTask(task) {
+        if (typeof task.data.handleId === 'number') {
+            // Node returns complex objects as handleIds
+            delete tasksByHandleId[task.data.handleId];
+        }
+        return clearNative(task.data.handleId);
+    }
+    setNative =
+        patchMethod(window, setName, function (delegate) { return function (self, args) {
+            if (typeof args[0] === 'function') {
+                var zone = Zone.current;
+                var options = {
+                    handleId: null,
+                    isPeriodic: nameSuffix === 'Interval',
+                    delay: (nameSuffix === 'Timeout' || nameSuffix === 'Interval') ? args[1] || 0 : null,
+                    args: args
+                };
+                var task = zone.scheduleMacroTask(setName, args[0], options, scheduleTask, clearTask);
+                if (!task) {
+                    return task;
+                }
+                // Node.js must additionally support the ref and unref functions.
+                var handle = task.data.handleId;
+                // check whether handle is null, because some polyfill or browser
+                // may return undefined from setTimeout/setInterval/setImmediate/requestAnimationFrame
+                if (handle && handle.ref && handle.unref && typeof handle.ref === 'function' &&
+                    typeof handle.unref === 'function') {
+                    task.ref = handle.ref.bind(handle);
+                    task.unref = handle.unref.bind(handle);
+                }
+                return task;
+            }
+            else {
+                // cause an error by calling it directly.
+                return delegate.apply(window, args);
+            }
+        }; });
+    clearNative =
+        patchMethod(window, cancelName, function (delegate) { return function (self, args) {
+            var task = typeof args[0] === 'number' ? tasksByHandleId[args[0]] : args[0];
+            if (task && typeof task.type === 'string') {
+                if (task.state !== 'notScheduled' &&
+                    (task.cancelFn && task.data.isPeriodic || task.runCount === 0)) {
+                    // Do not cancel already canceled functions
+                    task.zone.cancelTask(task);
+                }
+            }
+            else {
+                // cause an error by calling it directly.
+                delegate.apply(window, args);
+            }
+        }; });
+}
+
+/**
+ * @license
+ * Copyright Google Inc. All Rights Reserved.
+ *
+ * Use of this source code is governed by an MIT-style license that can be
+ * found in the LICENSE file at https://angular.io/license
+ */
+/*
+ * This is necessary for Chrome and Chrome mobile, to enable
+ * things like redefining `createdCallback` on an element.
+ */
+var _defineProperty = Object[zoneSymbol('defineProperty')] = Object.defineProperty;
+var _getOwnPropertyDescriptor = Object[zoneSymbol('getOwnPropertyDescriptor')] =
+    Object.getOwnPropertyDescriptor;
+var _create = Object.create;
+var unconfigurablesKey = zoneSymbol('unconfigurables');
+function propertyPatch() {
+    Object.defineProperty = function (obj, prop, desc) {
+        if (isUnconfigurable(obj, prop)) {
+            throw new TypeError('Cannot assign to read only property \'' + prop + '\' of ' + obj);
+        }
+        var originalConfigurableFlag = desc.configurable;
+        if (prop !== 'prototype') {
+            desc = rewriteDescriptor(obj, prop, desc);
+        }
+        return _tryDefineProperty(obj, prop, desc, originalConfigurableFlag);
+    };
+    Object.defineProperties = function (obj, props) {
+        Object.keys(props).forEach(function (prop) {
+            Object.defineProperty(obj, prop, props[prop]);
+        });
+        return obj;
+    };
+    Object.create = function (obj, proto) {
+        if (typeof proto === 'object' && !Object.isFrozen(proto)) {
+            Object.keys(proto).forEach(function (prop) {
+                proto[prop] = rewriteDescriptor(obj, prop, proto[prop]);
+            });
+        }
+        return _create(obj, proto);
+    };
+    Object.getOwnPropertyDescriptor = function (obj, prop) {
+        var desc = _getOwnPropertyDescriptor(obj, prop);
+        if (isUnconfigurable(obj, prop)) {
+            desc.configurable = false;
+        }
+        return desc;
+    };
+}
+function _redefineProperty(obj, prop, desc) {
+    var originalConfigurableFlag = desc.configurable;
+    desc = rewriteDescriptor(obj, prop, desc);
+    return _tryDefineProperty(obj, prop, desc, originalConfigurableFlag);
+}
+function isUnconfigurable(obj, prop) {
+    return obj && obj[unconfigurablesKey] && obj[unconfigurablesKey][prop];
+}
+function rewriteDescriptor(obj, prop, desc) {
+    desc.configurable = true;
+    if (!desc.configurable) {
+        if (!obj[unconfigurablesKey]) {
+            _defineProperty(obj, unconfigurablesKey, { writable: true, value: {} });
+        }
+        obj[unconfigurablesKey][prop] = true;
+    }
+    return desc;
+}
+function _tryDefineProperty(obj, prop, desc, originalConfigurableFlag) {
+    try {
+        return _defineProperty(obj, prop, desc);
+    }
+    catch (error) {
+        if (desc.configurable) {
+            // In case of errors, when the configurable flag was likely set by rewriteDescriptor(), let's
+            // retry with the original flag value
+            if (typeof originalConfigurableFlag == 'undefined') {
+                delete desc.configurable;
+            }
+            else {
+                desc.configurable = originalConfigurableFlag;
+            }
+            try {
+                return _defineProperty(obj, prop, desc);
+            }
+            catch (error) {
+                var descJson = null;
+                try {
+                    descJson = JSON.stringify(desc);
+                }
+                catch (error) {
+                    descJson = descJson.toString();
+                }
+                console.log("Attempting to configure '" + prop + "' with descriptor '" + descJson + "' on object '" + obj + "' and got error, giving up: " + error);
+            }
+        }
+        else {
+            throw error;
+        }
+    }
+}
+
+/**
+ * @license
+ * Copyright Google Inc. All Rights Reserved.
+ *
+ * Use of this source code is governed by an MIT-style license that can be
+ * found in the LICENSE file at https://angular.io/license
+ */
+var WTF_ISSUE_555 = 'Anchor,Area,Audio,BR,Base,BaseFont,Body,Button,Canvas,Content,DList,Directory,Div,Embed,FieldSet,Font,Form,Frame,FrameSet,HR,Head,Heading,Html,IFrame,Image,Input,Keygen,LI,Label,Legend,Link,Map,Marquee,Media,Menu,Meta,Meter,Mod,OList,Object,OptGroup,Option,Output,Paragraph,Pre,Progress,Quote,Script,Select,Source,Span,Style,TableCaption,TableCell,TableCol,Table,TableRow,TableSection,TextArea,Title,Track,UList,Unknown,Video';
+var NO_EVENT_TARGET = 'ApplicationCache,EventSource,FileReader,InputMethodContext,MediaController,MessagePort,Node,Performance,SVGElementInstance,SharedWorker,TextTrack,TextTrackCue,TextTrackList,WebKitNamedFlow,Window,Worker,WorkerGlobalScope,XMLHttpRequest,XMLHttpRequestEventTarget,XMLHttpRequestUpload,IDBRequest,IDBOpenDBRequest,IDBDatabase,IDBTransaction,IDBCursor,DBIndex,WebSocket'
+    .split(',');
+var EVENT_TARGET = 'EventTarget';
+function eventTargetPatch(_global) {
+    var apis = [];
+    var isWtf = _global['wtf'];
+    if (isWtf) {
+        // Workaround for: https://github.com/google/tracing-framework/issues/555
+        apis = WTF_ISSUE_555.split(',').map(function (v) { return 'HTML' + v + 'Element'; }).concat(NO_EVENT_TARGET);
+    }
+    else if (_global[EVENT_TARGET]) {
+        apis.push(EVENT_TARGET);
+    }
+    else {
+        // Note: EventTarget is not available in all browsers,
+        // if it's not available, we instead patch the APIs in the IDL that inherit from EventTarget
+        apis = NO_EVENT_TARGET;
+    }
+    for (var i = 0; i < apis.length; i++) {
+        var type = _global[apis[i]];
+        patchEventTargetMethods(type && type.prototype);
+    }
+}
+
+/**
+ * @license
+ * Copyright Google Inc. All Rights Reserved.
+ *
+ * Use of this source code is governed by an MIT-style license that can be
+ * found in the LICENSE file at https://angular.io/license
+ */
+// we have to patch the instance since the proto is non-configurable
+function apply(_global) {
+    var WS = _global.WebSocket;
+    // On Safari window.EventTarget doesn't exist so need to patch WS add/removeEventListener
+    // On older Chrome, no need since EventTarget was already patched
+    if (!_global.EventTarget) {
+        patchEventTargetMethods(WS.prototype);
+    }
+    _global.WebSocket = function (a, b) {
+        var socket = arguments.length > 1 ? new WS(a, b) : new WS(a);
+        var proxySocket;
+        // Safari 7.0 has non-configurable own 'onmessage' and friends properties on the socket instance
+        var onmessageDesc = Object.getOwnPropertyDescriptor(socket, 'onmessage');
+        if (onmessageDesc && onmessageDesc.configurable === false) {
+            proxySocket = Object.create(socket);
+            ['addEventListener', 'removeEventListener', 'send', 'close'].forEach(function (propName) {
+                proxySocket[propName] = function () {
+                    return socket[propName].apply(socket, arguments);
+                };
+            });
+        }
+        else {
+            // we can patch the real socket
+            proxySocket = socket;
+        }
+        patchOnProperties(proxySocket, ['close', 'error', 'message', 'open']);
+        return proxySocket;
+    };
+    for (var prop in WS) {
+        _global['WebSocket'][prop] = WS[prop];
+    }
+}
+
+/**
+ * @license
+ * Copyright Google Inc. All Rights Reserved.
+ *
+ * Use of this source code is governed by an MIT-style license that can be
+ * found in the LICENSE file at https://angular.io/license
+ */
+var globalEventHandlersEventNames = [
+    'abort',
+    'animationcancel',
+    'animationend',
+    'animationiteration',
+    'auxclick',
+    'beforeinput',
+    'blur',
+    'cancel',
+    'canplay',
+    'canplaythrough',
+    'change',
+    'compositionstart',
+    'compositionupdate',
+    'compositionend',
+    'cuechange',
+    'click',
+    'close',
+    'contextmenu',
+    'curechange',
+    'dblclick',
+    'drag',
+    'dragend',
+    'dragenter',
+    'dragexit',
+    'dragleave',
+    'dragover',
+    'drop',
+    'durationchange',
+    'emptied',
+    'ended',
+    'error',
+    'focus',
+    'focusin',
+    'focusout',
+    'gotpointercapture',
+    'input',
+    'invalid',
+    'keydown',
+    'keypress',
+    'keyup',
+    'load',
+    'loadstart',
+    'loadeddata',
+    'loadedmetadata',
+    'lostpointercapture',
+    'mousedown',
+    'mouseenter',
+    'mouseleave',
+    'mousemove',
+    'mouseout',
+    'mouseover',
+    'mouseup',
+    'mousewheel',
+    'pause',
+    'play',
+    'playing',
+    'pointercancel',
+    'pointerdown',
+    'pointerenter',
+    'pointerleave',
+    'pointerlockchange',
+    'mozpointerlockchange',
+    'webkitpointerlockerchange',
+    'pointerlockerror',
+    'mozpointerlockerror',
+    'webkitpointerlockerror',
+    'pointermove',
+    'pointout',
+    'pointerover',
+    'pointerup',
+    'progress',
+    'ratechange',
+    'reset',
+    'resize',
+    'scroll',
+    'seeked',
+    'seeking',
+    'select',
+    'selectionchange',
+    'selectstart',
+    'show',
+    'sort',
+    'stalled',
+    'submit',
+    'suspend',
+    'timeupdate',
+    'volumechange',
+    'touchcancel',
+    'touchmove',
+    'touchstart',
+    'transitioncancel',
+    'transitionend',
+    'waiting',
+    'wheel'
+];
+var documentEventNames = [
+    'afterscriptexecute', 'beforescriptexecute', 'DOMContentLoaded', 'fullscreenchange',
+    'mozfullscreenchange', 'webkitfullscreenchange', 'msfullscreenchange', 'fullscreenerror',
+    'mozfullscreenerror', 'webkitfullscreenerror', 'msfullscreenerror', 'readystatechange'
+];
+var windowEventNames = [
+    'absolutedeviceorientation',
+    'afterinput',
+    'afterprint',
+    'appinstalled',
+    'beforeinstallprompt',
+    'beforeprint',
+    'beforeunload',
+    'devicelight',
+    'devicemotion',
+    'deviceorientation',
+    'deviceorientationabsolute',
+    'deviceproximity',
+    'hashchange',
+    'languagechange',
+    'message',
+    'mozbeforepaint',
+    'offline',
+    'online',
+    'paint',
+    'pageshow',
+    'pagehide',
+    'popstate',
+    'rejectionhandled',
+    'storage',
+    'unhandledrejection',
+    'unload',
+    'userproximity',
+    'vrdisplyconnected',
+    'vrdisplaydisconnected',
+    'vrdisplaypresentchange'
+];
+var htmlElementEventNames = [
+    'beforecopy', 'beforecut', 'beforepaste', 'copy', 'cut', 'paste', 'dragstart', 'loadend',
+    'animationstart', 'search', 'transitionrun', 'transitionstart', 'webkitanimationend',
+    'webkitanimationiteration', 'webkitanimationstart', 'webkittransitionend'
+];
+var mediaElementEventNames = ['encrypted', 'waitingforkey', 'msneedkey', 'mozinterruptbegin', 'mozinterruptend'];
+var ieElementEventNames = [
+    'activate',
+    'afterupdate',
+    'ariarequest',
+    'beforeactivate',
+    'beforedeactivate',
+    'beforeeditfocus',
+    'beforeupdate',
+    'cellchange',
+    'controlselect',
+    'dataavailable',
+    'datasetchanged',
+    'datasetcomplete',
+    'errorupdate',
+    'filterchange',
+    'layoutcomplete',
+    'losecapture',
+    'move',
+    'moveend',
+    'movestart',
+    'propertychange',
+    'resizeend',
+    'resizestart',
+    'rowenter',
+    'rowexit',
+    'rowsdelete',
+    'rowsinserted',
+    'command',
+    'compassneedscalibration',
+    'deactivate',
+    'help',
+    'mscontentzoom',
+    'msmanipulationstatechanged',
+    'msgesturechange',
+    'msgesturedoubletap',
+    'msgestureend',
+    'msgesturehold',
+    'msgesturestart',
+    'msgesturetap',
+    'msgotpointercapture',
+    'msinertiastart',
+    'mslostpointercapture',
+    'mspointercancel',
+    'mspointerdown',
+    'mspointerenter',
+    'mspointerhover',
+    'mspointerleave',
+    'mspointermove',
+    'mspointerout',
+    'mspointerover',
+    'mspointerup',
+    'pointerout',
+    'mssitemodejumplistitemremoved',
+    'msthumbnailclick',
+    'stop',
+    'storagecommit'
+];
+var webglEventNames = ['webglcontextrestored', 'webglcontextlost', 'webglcontextcreationerror'];
+var formEventNames = ['autocomplete', 'autocompleteerror'];
+var detailEventNames = ['toggle'];
+var frameEventNames = ['load'];
+var frameSetEventNames = ['blur', 'error', 'focus', 'load', 'resize', 'scroll'];
+var marqueeEventNames = ['bounce', 'finish', 'start'];
+var XMLHttpRequestEventNames = [
+    'loadstart', 'progress', 'abort', 'error', 'load', 'progress', 'timeout', 'loadend',
+    'readystatechange'
+];
+var IDBIndexEventNames = ['upgradeneeded', 'complete', 'abort', 'success', 'error', 'blocked', 'versionchange', 'close'];
+var websocketEventNames = ['close', 'error', 'open', 'message'];
+var eventNames = globalEventHandlersEventNames.concat(webglEventNames, formEventNames, detailEventNames, documentEventNames, windowEventNames, htmlElementEventNames, ieElementEventNames);
+function propertyDescriptorPatch(_global) {
+    if (isNode && !isMix) {
+        return;
+    }
+    var supportsWebSocket = typeof WebSocket !== 'undefined';
+    if (canPatchViaPropertyDescriptor()) {
+        // for browsers that we can patch the descriptor:  Chrome & Firefox
+        if (isBrowser) {
+            // in IE/Edge, onProp not exist in window object, but in WindowPrototype
+            // so we need to pass WindowPrototype to check onProp exist or not
+            patchOnProperties(window, eventNames, Object.getPrototypeOf(window));
+            patchOnProperties(Document.prototype, eventNames);
+            if (typeof window['SVGElement'] !== 'undefined') {
+                patchOnProperties(window['SVGElement'].prototype, eventNames);
+            }
+            patchOnProperties(Element.prototype, eventNames);
+            patchOnProperties(HTMLElement.prototype, eventNames);
+            patchOnProperties(HTMLMediaElement.prototype, mediaElementEventNames);
+            patchOnProperties(HTMLFrameSetElement.prototype, windowEventNames.concat(frameSetEventNames));
+            patchOnProperties(HTMLBodyElement.prototype, windowEventNames.concat(frameSetEventNames));
+            patchOnProperties(HTMLFrameElement.prototype, frameEventNames);
+            patchOnProperties(HTMLIFrameElement.prototype, frameEventNames);
+            var HTMLMarqueeElement_1 = window['HTMLMarqueeElement'];
+            if (HTMLMarqueeElement_1) {
+                patchOnProperties(HTMLMarqueeElement_1.prototype, marqueeEventNames);
+            }
+        }
+        patchOnProperties(XMLHttpRequest.prototype, XMLHttpRequestEventNames);
+        var XMLHttpRequestEventTarget = _global['XMLHttpRequestEventTarget'];
+        if (XMLHttpRequestEventTarget) {
+            patchOnProperties(XMLHttpRequestEventTarget && XMLHttpRequestEventTarget.prototype, XMLHttpRequestEventNames);
+        }
+        if (typeof IDBIndex !== 'undefined') {
+            patchOnProperties(IDBIndex.prototype, IDBIndexEventNames);
+            patchOnProperties(IDBRequest.prototype, IDBIndexEventNames);
+            patchOnProperties(IDBOpenDBRequest.prototype, IDBIndexEventNames);
+            patchOnProperties(IDBDatabase.prototype, IDBIndexEventNames);
+            patchOnProperties(IDBTransaction.prototype, IDBIndexEventNames);
+            patchOnProperties(IDBCursor.prototype, IDBIndexEventNames);
+        }
+        if (supportsWebSocket) {
+            patchOnProperties(WebSocket.prototype, websocketEventNames);
+        }
+    }
+    else {
+        // Safari, Android browsers (Jelly Bean)
+        patchViaCapturingAllTheEvents();
+        patchClass('XMLHttpRequest');
+        if (supportsWebSocket) {
+            apply(_global);
+        }
+    }
+}
+function canPatchViaPropertyDescriptor() {
+    if ((isBrowser || isMix) && !Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'onclick') &&
+        typeof Element !== 'undefined') {
+        // WebKit https://bugs.webkit.org/show_bug.cgi?id=134364
+        // IDL interface attributes are not configurable
+        var desc = Object.getOwnPropertyDescriptor(Element.prototype, 'onclick');
+        if (desc && !desc.configurable)
+            return false;
+    }
+    var xhrDesc = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'onreadystatechange');
+    // add enumerable and configurable here because in opera
+    // by default XMLHttpRequest.prototype.onreadystatechange is undefined
+    // without adding enumerable and configurable will cause onreadystatechange
+    // non-configurable
+    // and if XMLHttpRequest.prototype.onreadystatechange is undefined,
+    // we should set a real desc instead a fake one
+    if (xhrDesc) {
+        Object.defineProperty(XMLHttpRequest.prototype, 'onreadystatechange', {
+            enumerable: true,
+            configurable: true,
+            get: function () {
+                return true;
+            }
+        });
+        var req = new XMLHttpRequest();
+        var result = !!req.onreadystatechange;
+        // restore original desc
+        Object.defineProperty(XMLHttpRequest.prototype, 'onreadystatechange', xhrDesc || {});
+        return result;
+    }
+    else {
+        Object.defineProperty(XMLHttpRequest.prototype, 'onreadystatechange', {
+            enumerable: true,
+            configurable: true,
+            get: function () {
+                return this[zoneSymbol('fakeonreadystatechange')];
+            },
+            set: function (value) {
+                this[zoneSymbol('fakeonreadystatechange')] = value;
+            }
+        });
+        var req = new XMLHttpRequest();
+        var detectFunc = function () { };
+        req.onreadystatechange = detectFunc;
+        var result = req[zoneSymbol('fakeonreadystatechange')] === detectFunc;
+        req.onreadystatechange = null;
+        return result;
+    }
+}
+
+var unboundKey = zoneSymbol('unbound');
+// Whenever any eventListener fires, we check the eventListener target and all parents
+// for `onwhatever` properties and replace them with zone-bound functions
+// - Chrome (for now)
+function patchViaCapturingAllTheEvents() {
+    var _loop_1 = function (i) {
+        var property = eventNames[i];
+        var onproperty = 'on' + property;
+        self.addEventListener(property, function (event) {
+            var elt = event.target, bound, source;
+            if (elt) {
+                source = elt.constructor['name'] + '.' + onproperty;
+            }
+            else {
+                source = 'unknown.' + onproperty;
+            }
+            while (elt) {
+                if (elt[onproperty] && !elt[onproperty][unboundKey]) {
+                    bound = Zone.current.wrap(elt[onproperty], source);
+                    bound[unboundKey] = elt[onproperty];
+                    elt[onproperty] = bound;
+                }
+                elt = elt.parentElement;
+            }
+        }, true);
+    };
+    for (var i = 0; i < eventNames.length; i++) {
+        _loop_1(i);
+    }
+}
+
+/**
+ * @license
+ * Copyright Google Inc. All Rights Reserved.
+ *
+ * Use of this source code is governed by an MIT-style license that can be
+ * found in the LICENSE file at https://angular.io/license
+ */
+function registerElementPatch(_global) {
+    if ((!isBrowser && !isMix) || !('registerElement' in _global.document)) {
+        return;
+    }
+    var _registerElement = document.registerElement;
+    var callbacks = ['createdCallback', 'attachedCallback', 'detachedCallback', 'attributeChangedCallback'];
+    document.registerElement = function (name, opts) {
+        if (opts && opts.prototype) {
+            callbacks.forEach(function (callback) {
+                var source = 'Document.registerElement::' + callback;
+                if (opts.prototype.hasOwnProperty(callback)) {
+                    var descriptor = Object.getOwnPropertyDescriptor(opts.prototype, callback);
+                    if (descriptor && descriptor.value) {
+                        descriptor.value = Zone.current.wrap(descriptor.value, source);
+                        _redefineProperty(opts.prototype, callback, descriptor);
+                    }
+                    else {
+                        opts.prototype[callback] = Zone.current.wrap(opts.prototype[callback], source);
+                    }
+                }
+                else if (opts.prototype[callback]) {
+                    opts.prototype[callback] = Zone.current.wrap(opts.prototype[callback], source);
+                }
+            });
+        }
+        return _registerElement.apply(document, [name, opts]);
+    };
+    attachOriginToPatched(document.registerElement, _registerElement);
+}
+
+/**
+ * @license
+ * Copyright Google Inc. All Rights Reserved.
+ *
+ * Use of this source code is governed by an MIT-style license that can be
+ * found in the LICENSE file at https://angular.io/license
+ */
+Zone.__load_patch('timers', function (global, Zone, api) {
+    var set = 'set';
+    var clear = 'clear';
+    patchTimer(global, set, clear, 'Timeout');
+    patchTimer(global, set, clear, 'Interval');
+    patchTimer(global, set, clear, 'Immediate');
+    patchTimer(global, 'request', 'cancel', 'AnimationFrame');
+    patchTimer(global, 'mozRequest', 'mozCancel', 'AnimationFrame');
+    patchTimer(global, 'webkitRequest', 'webkitCancel', 'AnimationFrame');
+});
+Zone.__load_patch('blocking', function (global, Zone, api) {
+    var blockingMethods = ['alert', 'prompt', 'confirm'];
+    for (var i = 0; i < blockingMethods.length; i++) {
+        var name_1 = blockingMethods[i];
+        patchMethod(global, name_1, function (delegate, symbol, name) {
+            return function (s, args) {
+                return Zone.current.run(delegate, global, args, name);
+            };
+        });
+    }
+});
+Zone.__load_patch('EventTarget', function (global, Zone, api) {
+    eventTargetPatch(global);
+    // patch XMLHttpRequestEventTarget's addEventListener/removeEventListener
+    var XMLHttpRequestEventTarget = global['XMLHttpRequestEventTarget'];
+    if (XMLHttpRequestEventTarget && XMLHttpRequestEventTarget.prototype) {
+        patchEventTargetMethods(XMLHttpRequestEventTarget.prototype);
+    }
+    patchClass('MutationObserver');
+    patchClass('WebKitMutationObserver');
+    patchClass('FileReader');
+});
+Zone.__load_patch('on_property', function (global, Zone, api) {
+    propertyDescriptorPatch(global);
+    propertyPatch();
+    registerElementPatch(global);
+});
+Zone.__load_patch('canvas', function (global, Zone, api) {
+    var HTMLCanvasElement = global['HTMLCanvasElement'];
+    if (typeof HTMLCanvasElement !== 'undefined' && HTMLCanvasElement.prototype &&
+        HTMLCanvasElement.prototype.toBlob) {
+        patchMacroTask(HTMLCanvasElement.prototype, 'toBlob', function (self, args) {
+            return { name: 'HTMLCanvasElement.toBlob', target: self, callbackIndex: 0, args: args };
+        });
+    }
+});
+Zone.__load_patch('XHR', function (global, Zone, api) {
+    // Treat XMLHTTPRequest as a macrotask.
+    patchXHR(global);
+    var XHR_TASK = zoneSymbol('xhrTask');
+    var XHR_SYNC = zoneSymbol('xhrSync');
+    var XHR_LISTENER = zoneSymbol('xhrListener');
+    var XHR_SCHEDULED = zoneSymbol('xhrScheduled');
+    function patchXHR(window) {
+        function findPendingTask(target) {
+            var pendingTask = target[XHR_TASK];
+            return pendingTask;
+        }
+        function scheduleTask(task) {
+            XMLHttpRequest[XHR_SCHEDULED] = false;
+            var data = task.data;
+            // remove existing event listener
+            var listener = data.target[XHR_LISTENER];
+            var oriAddListener = data.target[zoneSymbol('addEventListener')];
+            var oriRemoveListener = data.target[zoneSymbol('removeEventListener')];
+            if (listener) {
+                oriRemoveListener.apply(data.target, ['readystatechange', listener]);
+            }
+            var newListener = data.target[XHR_LISTENER] = function () {
+                if (data.target.readyState === data.target.DONE) {
+                    // sometimes on some browsers XMLHttpRequest will fire onreadystatechange with
+                    // readyState=4 multiple times, so we need to check task state here
+                    if (!data.aborted && XMLHttpRequest[XHR_SCHEDULED] &&
+                        task.state === 'scheduled') {
+                        task.invoke();
+                    }
+                }
+            };
+            oriAddListener.apply(data.target, ['readystatechange', newListener]);
+            var storedTask = data.target[XHR_TASK];
+            if (!storedTask) {
+                data.target[XHR_TASK] = task;
+            }
+            sendNative.apply(data.target, data.args);
+            XMLHttpRequest[XHR_SCHEDULED] = true;
+            return task;
+        }
+        function placeholderCallback() { }
+        function clearTask(task) {
+            var data = task.data;
+            // Note - ideally, we would call data.target.removeEventListener here, but it's too late
+            // to prevent it from firing. So instead, we store info for the event listener.
+            data.aborted = true;
+            return abortNative.apply(data.target, data.args);
+        }
+        var openNative = patchMethod(window.XMLHttpRequest.prototype, 'open', function () { return function (self, args) {
+            self[XHR_SYNC] = args[2] == false;
+            return openNative.apply(self, args);
+        }; });
+        var sendNative = patchMethod(window.XMLHttpRequest.prototype, 'send', function () { return function (self, args) {
+            var zone = Zone.current;
+            if (self[XHR_SYNC]) {
+                // if the XHR is sync there is no task to schedule, just execute the code.
+                return sendNative.apply(self, args);
+            }
+            else {
+                var options = { target: self, isPeriodic: false, delay: null, args: args, aborted: false };
+                return zone.scheduleMacroTask('XMLHttpRequest.send', placeholderCallback, options, scheduleTask, clearTask);
+            }
+        }; });
+        var abortNative = patchMethod(window.XMLHttpRequest.prototype, 'abort', function (delegate) { return function (self, args) {
+            var task = findPendingTask(self);
+            if (task && typeof task.type == 'string') {
+                // If the XHR has already completed, do nothing.
+                // If the XHR has already been aborted, do nothing.
+                // Fix #569, call abort multiple times before done will cause
+                // macroTask task count be negative number
+                if (task.cancelFn == null || (task.data && task.data.aborted)) {
+                    return;
+                }
+                task.zone.cancelTask(task);
+            }
+            // Otherwise, we are trying to abort an XHR which has not yet been sent, so there is no
+            // task
+            // to cancel. Do nothing.
+        }; });
+    }
+});
+Zone.__load_patch('geolocation', function (global, Zone, api) {
+    /// GEO_LOCATION
+    if (global['navigator'] && global['navigator'].geolocation) {
+        patchPrototype(global['navigator'].geolocation, ['getCurrentPosition', 'watchPosition']);
+    }
+});
+Zone.__load_patch('PromiseRejectionEvent', function (global, Zone, api) {
+    // handle unhandled promise rejection
+    function findPromiseRejectionHandler(evtName) {
+        return function (e) {
+            var eventTasks = findEventTask(global, evtName);
+            eventTasks.forEach(function (eventTask) {
+                // windows has added unhandledrejection event listener
+                // trigger the event listener
+                var PromiseRejectionEvent = global['PromiseRejectionEvent'];
+                if (PromiseRejectionEvent) {
+                    var evt = new PromiseRejectionEvent(evtName, { promise: e.promise, reason: e.rejection });
+                    eventTask.invoke(evt);
+                }
+            });
+        };
+    }
+    if (global['PromiseRejectionEvent']) {
+        Zone[zoneSymbol('unhandledPromiseRejectionHandler')] =
+            findPromiseRejectionHandler('unhandledrejection');
+        Zone[zoneSymbol('rejectionHandledHandler')] =
+            findPromiseRejectionHandler('rejectionhandled');
+    }
+});
+Zone.__load_patch('util', function (global, Zone, api) {
+    api.patchEventTargetMethods = patchEventTargetMethods;
+    api.patchOnProperties = patchOnProperties;
+    api.patchMethod = patchMethod;
+});
+
+/**
+ * @license
+ * Copyright Google Inc. All Rights Reserved.
+ *
+ * Use of this source code is governed by an MIT-style license that can be
+ * found in the LICENSE file at https://angular.io/license
+ */
+
+})));
+
+}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},undefined)
+},{}],26:[function(_dereq_,module,exports){
+(function (define){
+(function(root, factory) {
+    'use strict';
+    // Universal Module Definition (UMD) to support AMD, CommonJS/Node.js, Rhino, and browsers.
+
+    /* istanbul ignore next */
+    if (typeof define === 'function' && define.amd) {
+        define('stackframe', [], factory);
+    } else if (typeof exports === 'object') {
+        module.exports = factory();
+    } else {
+        root.StackFrame = factory();
+    }
+}(this, function() {
+    'use strict';
+    function _isNumber(n) {
+        return !isNaN(parseFloat(n)) && isFinite(n);
+    }
+
+    function _capitalize(str) {
+        return str[0].toUpperCase() + str.substring(1);
+    }
+
+    function _getter(p) {
+        return function() {
+            return this[p];
+        };
+    }
+
+    var booleanProps = ['isConstructor', 'isEval', 'isNative', 'isToplevel'];
+    var numericProps = ['columnNumber', 'lineNumber'];
+    var stringProps = ['fileName', 'functionName', 'source'];
+    var arrayProps = ['args'];
+
+    var props = booleanProps.concat(numericProps, stringProps, arrayProps);
+
+    function StackFrame(obj) {
+        if (obj instanceof Object) {
+            for (var i = 0; i < props.length; i++) {
+                if (obj.hasOwnProperty(props[i]) && obj[props[i]] !== undefined) {
+                    this['set' + _capitalize(props[i])](obj[props[i]]);
+                }
+            }
+        }
+    }
+
+    StackFrame.prototype = {
+        getArgs: function() {
+            return this.args;
+        },
+        setArgs: function(v) {
+            if (Object.prototype.toString.call(v) !== '[object Array]') {
+                throw new TypeError('Args must be an Array');
+            }
+            this.args = v;
+        },
+
+        getEvalOrigin: function() {
+            return this.evalOrigin;
+        },
+        setEvalOrigin: function(v) {
+            if (v instanceof StackFrame) {
+                this.evalOrigin = v;
+            } else if (v instanceof Object) {
+                this.evalOrigin = new StackFrame(v);
+            } else {
+                throw new TypeError('Eval Origin must be an Object or StackFrame');
+            }
+        },
+
+        toString: function() {
+            var functionName = this.getFunctionName() || '{anonymous}';
+            var args = '(' + (this.getArgs() || []).join(',') + ')';
+            var fileName = this.getFileName() ? ('@' + this.getFileName()) : '';
+            var lineNumber = _isNumber(this.getLineNumber()) ? (':' + this.getLineNumber()) : '';
+            var columnNumber = _isNumber(this.getColumnNumber()) ? (':' + this.getColumnNumber()) : '';
+            return functionName + args + fileName + lineNumber + columnNumber;
+        }
+    };
+
+    for (var i = 0; i < booleanProps.length; i++) {
+        StackFrame.prototype['get' + _capitalize(booleanProps[i])] = _getter(booleanProps[i]);
+        StackFrame.prototype['set' + _capitalize(booleanProps[i])] = (function(p) {
+            return function(v) {
+                this[p] = Boolean(v);
+            };
+        })(booleanProps[i]);
+    }
+
+    for (var j = 0; j < numericProps.length; j++) {
+        StackFrame.prototype['get' + _capitalize(numericProps[j])] = _getter(numericProps[j]);
+        StackFrame.prototype['set' + _capitalize(numericProps[j])] = (function(p) {
+            return function(v) {
+                if (!_isNumber(v)) {
+                    throw new TypeError(p + ' must be a Number');
+                }
+                this[p] = Number(v);
+            };
+        })(numericProps[j]);
+    }
+
+    for (var k = 0; k < stringProps.length; k++) {
+        StackFrame.prototype['get' + _capitalize(stringProps[k])] = _getter(stringProps[k]);
+        StackFrame.prototype['set' + _capitalize(stringProps[k])] = (function(p) {
+            return function(v) {
+                this[p] = String(v);
+            };
+        })(stringProps[k]);
+    }
+
+    return StackFrame;
+}));
+
+}).call(this,undefined)
+},{}],27:[function(_dereq_,module,exports){
+(function (define){
+(function (root, factory) {
+    'use strict';
+    // Universal Module Definition (UMD) to support AMD, CommonJS/Node.js, Rhino, and browsers.
+
+    /* istanbul ignore next */
+    if (typeof define === 'function' && define.amd) {
+        define('stack-generator', ['stackframe'], factory);
+    } else if (typeof exports === 'object') {
+        module.exports = factory(_dereq_('stackframe'));
+    } else {
+        root.StackGenerator = factory(root.StackFrame);
+    }
+}(this, function (StackFrame) {
+    return {
+        backtrace: function StackGenerator$$backtrace(opts) {
+            var stack = [];
+            var maxStackSize = 10;
+
+            if (typeof opts === 'object' && typeof opts.maxStackSize === 'number') {
+                maxStackSize = opts.maxStackSize;
+            }
+
+            var curr = arguments.callee;
+            while (curr && stack.length < maxStackSize) {
+                // Allow V8 optimizations
+                var args = new Array(curr['arguments'].length);
+                for(var i = 0; i < args.length; ++i) {
+                    args[i] = curr['arguments'][i];
+                }
+                if (/function(?:\s+([\w$]+))+\s*\(/.test(curr.toString())) {
+                    stack.push(new StackFrame({functionName: RegExp.$1 || undefined, args: args}));
+                } else {
+                    stack.push(new StackFrame({args: args}));
+                }
+
+                try {
+                    curr = curr.caller;
+                } catch (e) {
+                    break;
+                }
+            }
+            return stack;
+        }
+    };
+}));
+
+}).call(this,undefined)
+},{"stackframe":26}],28:[function(_dereq_,module,exports){
+(function (define){
+(function (root, factory) {
+    'use strict';
+    // Universal Module Definition (UMD) to support AMD, CommonJS/Node.js, Rhino, and browsers.
+
+    /* istanbul ignore next */
+    if (typeof define === 'function' && define.amd) {
+        define('stackframe', [], factory);
+    } else if (typeof exports === 'object') {
+        module.exports = factory();
+    } else {
+        root.StackFrame = factory();
+    }
+}(this, function () {
+    'use strict';
+    function _isNumber(n) {
+        return !isNaN(parseFloat(n)) && isFinite(n);
+    }
+
+    function StackFrame(functionName, args, fileName, lineNumber, columnNumber, source) {
+        if (functionName !== undefined) {
+            this.setFunctionName(functionName);
+        }
+        if (args !== undefined) {
+            this.setArgs(args);
+        }
+        if (fileName !== undefined) {
+            this.setFileName(fileName);
+        }
+        if (lineNumber !== undefined) {
+            this.setLineNumber(lineNumber);
+        }
+        if (columnNumber !== undefined) {
+            this.setColumnNumber(columnNumber);
+        }
+        if (source !== undefined) {
+            this.setSource(source);
+        }
+    }
+
+    StackFrame.prototype = {
+        getFunctionName: function () {
+            return this.functionName;
+        },
+        setFunctionName: function (v) {
+            this.functionName = String(v);
+        },
+
+        getArgs: function () {
+            return this.args;
+        },
+        setArgs: function (v) {
+            if (Object.prototype.toString.call(v) !== '[object Array]') {
+                throw new TypeError('Args must be an Array');
+            }
+            this.args = v;
+        },
+
+        // NOTE: Property name may be misleading as it includes the path,
+        // but it somewhat mirrors V8's JavaScriptStackTraceApi
+        // https://code.google.com/p/v8/wiki/JavaScriptStackTraceApi and Gecko's
+        // http://mxr.mozilla.org/mozilla-central/source/xpcom/base/nsIException.idl#14
+        getFileName: function () {
+            return this.fileName;
+        },
+        setFileName: function (v) {
+            this.fileName = String(v);
+        },
+
+        getLineNumber: function () {
+            return this.lineNumber;
+        },
+        setLineNumber: function (v) {
+            if (!_isNumber(v)) {
+                throw new TypeError('Line Number must be a Number');
+            }
+            this.lineNumber = Number(v);
+        },
+
+        getColumnNumber: function () {
+            return this.columnNumber;
+        },
+        setColumnNumber: function (v) {
+            if (!_isNumber(v)) {
+                throw new TypeError('Column Number must be a Number');
+            }
+            this.columnNumber = Number(v);
+        },
+
+        getSource: function () {
+            return this.source;
+        },
+        setSource: function (v) {
+            this.source = String(v);
+        },
+
+        toString: function() {
+            var functionName = this.getFunctionName() || '{anonymous}';
+            var args = '(' + (this.getArgs() || []).join(',') + ')';
+            var fileName = this.getFileName() ? ('@' + this.getFileName()) : '';
+            var lineNumber = _isNumber(this.getLineNumber()) ? (':' + this.getLineNumber()) : '';
+            var columnNumber = _isNumber(this.getColumnNumber()) ? (':' + this.getColumnNumber()) : '';
+            return functionName + args + fileName + lineNumber + columnNumber;
+        }
+    };
+
+    return StackFrame;
+}));
+
+}).call(this,undefined)
+},{}],29:[function(_dereq_,module,exports){
+var ngOpbeat = _dereq_('./ngOpbeat')
+var patchAngularBootstrap = _dereq_('./patches/bootstrapPatch')
+var patchCommon = _dereq_('opbeat-js-core').patchCommon
+
+function initialize (serviceFactory) {
+  var serviceContainer = serviceFactory.getPerformanceServiceContainer()
+  var services = serviceContainer.services
+  if (!services.configService.isPlatformSupported()) {
+    services.logger.warn('Platform is not supported.')
+  } else {
+    serviceContainer.initialize()
   }
 
-  this.zone = {name: 'opbeatMockZone'}
-  this.get = function (key) {
-    return this.zone[key]
-  }
-  this.set = function (key, value) {
-    this.zone[key] = value
-  }
-  this.getFromOpbeatZone = function (key) {
-    return this.get(key)
-  }
-  this.runOuter = function (fn) {
-    return fn()
-  }
-  this.zone.run = function (callback, applyThis, applyArgs, source) {
-    return callback.apply(applyThis, applyArgs)
+  var alreadyRegistered = false
+  patchCommon(serviceContainer)
+
+  function noop () {}
+  services['angularInitializer'] = {
+    afterBootstrap: noop,
+    beforeBootstrap: noop
   }
 
-  this.runInOpbeatZone = function (fn, applyThis, applyArgs) {
-    return fn.apply(applyThis, applyArgs)
+  function beforeBootstrap (modules) {
+    services['angularInitializer'].beforeBootstrap()
   }
 
-  this.isOpbeatZone = function () {
+  function afterBootstrap () {
+    services['angularInitializer'].afterBootstrap()
+  }
+
+  function opbeatBootstrap (fn, applyThis, applyArgs) {
+    if (!alreadyRegistered) {
+      alreadyRegistered = registerOpbeatModule(services)
+    }
+    var result
+    if (services.configService.isPlatformSupported()) {
+      beforeBootstrap()
+      result = services.zoneService.runInOpbeatZone(fn, applyThis, applyArgs, 'angular:bootstrap')
+      afterBootstrap()
+    } else {
+      result = fn.apply(applyThis, applyArgs)
+    }
+    return result
+  }
+
+  services.exceptionHandler = serviceFactory.getExceptionHandler()
+  services.exceptionHandler.install()
+  alreadyRegistered = registerOpbeatModule(services)
+  patchAngularBootstrap(opbeatBootstrap)
+}
+
+function registerOpbeatModule (services) {
+  return ngOpbeat(services)
+}
+
+module.exports = initialize
+
+},{"./ngOpbeat":30,"./patches/bootstrapPatch":32,"opbeat-js-core":13}],30:[function(_dereq_,module,exports){
+var patchController = _dereq_('./patches/controllerPatch')
+var patchCompile = _dereq_('./patches/compilePatch')
+var patchRootScope = _dereq_('./patches/rootScopePatch')
+var patchDirectives = _dereq_('./patches/directivesPatch')
+var patchExceptionHandler = _dereq_('./patches/exceptionHandlerPatch')
+var patchInteractions = _dereq_('./patches/interactionsPatch')
+
+var utils = _dereq_('opbeat-js-core').utils
+
+function NgOpbeatProvider (logger, configService, exceptionHandler) {
+  this.config = function config (properties) {
+    if (properties) {
+      configService.setConfig(properties)
+    }
+  }
+
+  this.version = configService.get('VERSION')
+
+  this.install = function install () {
+    logger.warn('$opbeatProvider.install is deprecated!')
+  }
+
+  this.$get = [
+    function () {
+      return {
+        getConfig: function config () {
+          return configService
+        },
+        captureException: function captureException (exception, options) {
+          if (!(exception instanceof Error)) {
+            logger.warn("Can't capture exception. Passed exception needs to be an instanceof Error")
+            return
+          }
+
+          // TraceKit.report will re-raise any exception passed to it,
+          // which means you have to wrap it in try/catch. Instead, we
+          // can wrap it here and only re-raise if TraceKit.report
+          // raises an exception different from the one we asked to
+          // report on.
+
+          exceptionHandler.processError(exception, options)
+        },
+
+        setUserContext: function setUser (user) {
+          configService.set('context.user', user)
+        },
+
+        setExtraContext: function setExtraContext (data) {
+          configService.set('context.extra', data)
+        }
+      }
+    }
+  ]
+}
+
+function patchAll ($provide, transactionService) {
+  patchExceptionHandler($provide)
+  patchController($provide, transactionService)
+  patchCompile($provide, transactionService)
+  patchRootScope($provide, transactionService)
+  patchDirectives($provide, transactionService)
+  patchInteractions($provide, transactionService)
+}
+
+function publishExternalApi (spec) {
+  var opbeat = window.opbeat || (window.opbeat = {})
+  utils.extend(opbeat, spec)
+}
+
+function noop () {}
+
+function registerOpbeatModule (services) {
+  var transactionService = services.transactionService
+  var logger = services.logger
+  var configService = services.configService
+  var exceptionHandler = services.exceptionHandler
+  var angularInitializer = services.angularInitializer
+
+  var routeChanged = false
+  var hardNavigation = true
+
+  function moduleRun ($rootScope, $injector) {
+    configService.set('isInstalled', true)
+    configService.set('opbeatAgentName', 'opbeat-angular')
+    configService.set('platform.framework', 'angular/' + window.angular.version.full)
+
+    var platform = getPlatform()
+    if (platform) {
+      configService.set('platform.platform', platform)
+    }
+
+    logger.debug('Agent:', configService.getAgentName())
+
+    function startRouteChange (name) {
+      routeChanged = true
+      if (!configService.get('performance.enable')) {
+        logger.debug('Performance monitoring is disable')
+        return
+      }
+      logger.debug('Route change started')
+      var transactionName = name
+      if (transactionName === '' || typeof transactionName === 'undefined') {
+        transactionName = '/'
+      }
+
+      var tr = transactionService.startTransaction(transactionName, 'route-change')
+      if (tr && hardNavigation) {
+        hardNavigation = false
+        tr.isHardNavigation = true
+      }
+    }
+
+    function onRouteChangeStart (event, current) {
+      var transactionName
+      if (current && current.$$route) { // ngRoute
+        // ignoring redirects since we will get another event
+        if (typeof current.$$route.redirectTo !== 'undefined') {
+          return
+        }
+        transactionName = current.$$route.originalPath
+      } else if (current && current.name) { // UI Router
+        transactionName = current.name
+      }
+      startRouteChange(transactionName)
+    }
+
+    // ui-router 1
+    if ($injector.has('$transitions')) {
+      var $transitions = $injector.get('$transitions')
+
+      $transitions.onStart({ }, function uiRouterOnStart (trans) {
+        var to = trans.to()
+        startRouteChange(to.name)
+      })
+    } else {
+
+      // ng-router
+      $rootScope.$on('$routeChangeStart', onRouteChangeStart)
+
+      // ui-router
+      $rootScope.$on('$stateChangeStart', onRouteChangeStart)
+    }
+  }
+
+  function moduleConfig ($provide) {
+    patchAll($provide, transactionService)
+  }
+
+  function getPlatform () {
+    var isCordovaApp = (typeof window.cordova !== 'undefined')
+    if (isCordovaApp) {
+      return 'cordova'
+    } else {
+      return 'browser'
+    }
+  }
+
+  publishExternalApi({
+    'setInitialPageLoadName': function setInitialPageLoadName (name) {
+      transactionService.initialPageLoadName = name
+    }
+  })
+
+  if (window.angular && typeof window.angular.module === 'function') {
+    if (!configService.isPlatformSupported()) {
+      window.angular.module('ngOpbeat', [])
+        .provider('$opbeat', new NgOpbeatProvider(logger, configService, exceptionHandler))
+        .config(['$provide', noop])
+        .run(['$rootScope', noop])
+    } else {
+      window.angular.module('ngOpbeat', [])
+        .provider('$opbeat', new NgOpbeatProvider(logger, configService, exceptionHandler))
+        .config(['$provide', moduleConfig])
+        .run(['$rootScope', '$injector', moduleRun])
+
+      angularInitializer.beforeBootstrap = function beforeBootstrap () {
+        transactionService.metrics['appBeforeBootstrap'] = performance.now()
+      }
+      angularInitializer.afterBootstrap = function afterBootstrap () {
+        transactionService.metrics['appAfterBootstrap'] = performance.now()
+        if (!routeChanged) {
+          transactionService.sendPageLoadMetrics()
+        }
+      }
+    }
+    window.angular.module('opbeat-angular', ['ngOpbeat'])
     return true
   }
+}
 
-  this.getCurrentZone = function () {
-    return this.zone
+module.exports = registerOpbeatModule
+
+},{"./patches/compilePatch":33,"./patches/controllerPatch":34,"./patches/directivesPatch":35,"./patches/exceptionHandlerPatch":36,"./patches/interactionsPatch":37,"./patches/rootScopePatch":38,"opbeat-js-core":13}],31:[function(_dereq_,module,exports){
+var opbeatCore = _dereq_('opbeat-js-core')
+var ServiceFactory = opbeatCore.ServiceFactory
+var angularInitializer = _dereq_('./angularInitializer')
+
+_dereq_('opbeat-zone')
+function init () {
+  var serviceFactory = new ServiceFactory()
+  if (window.opbeatApi && window.opbeatApi.serviceFactory) {
+    serviceFactory = window.opbeatApi.serviceFactory
+  }
+  angularInitializer(serviceFactory)
+}
+
+init()
+
+},{"./angularInitializer":29,"opbeat-js-core":13,"opbeat-zone":25}],32:[function(_dereq_,module,exports){
+var DEFER_LABEL = 'NG_DEFER_BOOTSTRAP!'
+var deferRegex = new RegExp('^' + DEFER_LABEL + '.*')
+
+function patchMainBootstrap (opbeatBootstrap, weDeferred) {
+  if (typeof window.angular === 'undefined') {
+    return
+  }
+  var originalBootstrapFn = window.angular.bootstrap
+
+  function bootstrap (element, modules) {
+    if (weDeferred && deferRegex.test(window.name)) {
+      window.name = window.name.substring(DEFER_LABEL.length)
+    }
+    return opbeatBootstrap(originalBootstrapFn, window.angular, arguments)
+  }
+
+  Object.defineProperty(window.angular, 'bootstrap', {
+    get: function () {
+      if (typeof originalBootstrapFn === 'function') {
+        return bootstrap
+      } else {
+        return originalBootstrapFn
+      }
+    },
+    set: function (bootstrapFn) {
+      originalBootstrapFn = bootstrapFn
+    }
+  })
+}
+
+function patchDeferredBootstrap (opbeatBootstrap) {
+  if (typeof window.angular === 'undefined') {
+    return
+  }
+  // If the bootstrap is already deferred. (like run by Protractor)
+  // In this case `resumeBootstrap` should be patched
+  if (deferRegex.test(window.name)) {
+    var originalResumeBootstrap = window.angular.resumeBootstrap
+    Object.defineProperty(window.angular, 'resumeBootstrap', {
+      get: function () {
+        if (typeof originalResumeBootstrap === 'function') {
+          return function (modules) {
+            return opbeatBootstrap(originalResumeBootstrap, window.angular, arguments)
+          }
+        } else {
+          return originalResumeBootstrap
+        }
+      },
+      set: function (resumeBootstrap) {
+        originalResumeBootstrap = resumeBootstrap
+      }
+    })
+    // we have not deferred the bootstrap
+    return false
+  } else { // If this is not a test, defer bootstrapping
+    window.name = DEFER_LABEL + window.name
+
+    window.angular.resumeDeferredBootstrap = function () {
+      var modules = []
+      return opbeatBootstrap(window.angular.resumeBootstrap, window.angular, [modules])
+    }
+    /* angular should remove DEFER_LABEL from window.name, but if angular is never loaded, we want
+     to remove it ourselves */
+    window.addEventListener('beforeunload', function () {
+      if (deferRegex.test(window.name)) {
+        window.name = window.name.substring(DEFER_LABEL.length)
+      }
+    })
+    // we have deferred the bootstrap
+    return true
   }
 }
-module.exports = ZoneServiceMock
+
+function createAngular (opbeatBootstrap) {
+  // with this method we can initialize opbeat-angular before or after angular is loaded
+  var alreadyPatched = false
+  var originalAngular = window.angular
+  // todo: check if defineProperty exists, add it isPlatformSupported
+  // we don't support browsers that don't have defineProperty (IE<9)
+  Object.defineProperty(window, 'angular', {
+    get: function () {
+      return originalAngular
+    },
+    set: function (value) {
+      originalAngular = value
+      if (!alreadyPatched && typeof originalAngular === 'object') {
+        alreadyPatched = true
+        patchAll(opbeatBootstrap)
+      }
+    },
+    enumerable: true,
+    configurable: true
+  })
+}
+
+function patchAll (opbeatBootstrap) {
+  var weDeferred = patchDeferredBootstrap(opbeatBootstrap)
+  patchMainBootstrap(opbeatBootstrap, weDeferred)
+}
+
+function patchAngularBootstrap (opbeatBootstrap) {
+  if (window.angular) {
+    patchAll(opbeatBootstrap)
+  } else {
+    createAngular(opbeatBootstrap)
+  }
+}
+
+module.exports = patchAngularBootstrap
+
+},{}],33:[function(_dereq_,module,exports){
+var opbeatCore = _dereq_('opbeat-js-core')
+var patchUtils = opbeatCore.patchUtils
+var utils = opbeatCore.utils
+module.exports = function ($provide, transactionService) {
+  $provide.decorator('$compile', ['$delegate', '$injector', function ($delegate, $injector) {
+    var nameParts = ['$compile', 'compile']
+    var traceType = 'template.$compile'
+
+    var traceName = nameParts.join('.')
+
+    function compile () {
+      var trace = transactionService.startTrace(traceName, traceType, {enableStackFrames: false})
+      try {
+        var result = $delegate.apply(this, arguments)
+      } finally {
+        if (!utils.isUndefined(trace)) {
+          trace.end()
+        }
+      }
+      return result
+    }
+
+    patchUtils._copyProperties($delegate, compile)
+
+    return compile
+  }])
+}
+
+},{"opbeat-js-core":13}],34:[function(_dereq_,module,exports){
+var utils = _dereq_('opbeat-js-core').utils
+
+function getControllerInfoFromArgs (args) {
+  var scope, name
+
+  if (typeof args[0] === 'string') {
+    name = args[0]
+  } else if (typeof args[0] === 'function') {
+    name = args[0].name
+  }
+
+  if (typeof args[1] === 'object') {
+    scope = args[1].$scope
+  }
+
+  return {
+    scope: scope,
+    name: name
+  }
+}
+
+module.exports = function ($provide, transactionService) {
+  $provide.decorator('$controller', ['$delegate', '$injector', function ($delegate, $injector) {
+    return function () {
+      var args = Array.prototype.slice.call(arguments)
+      var controllerInfo = getControllerInfoFromArgs(args)
+
+      if (controllerInfo.name) {
+        var traceName = '$controller.' + controllerInfo.name
+        var traceType = 'app.$controller'
+        var trace = transactionService.startTrace(traceName, traceType, {enableStackFrames: false})
+        var result
+
+        try {
+          result = $delegate.apply(this, arguments)
+        } finally {
+          if (!utils.isUndefined(trace)) {
+            trace.end()
+          }
+        }
+      } else {
+        result = $delegate.apply(this, arguments)
+      }
+
+      return result
+    }
+  }])
+}
+
+},{"opbeat-js-core":13}],35:[function(_dereq_,module,exports){
+var utils = _dereq_('opbeat-js-core').utils
+module.exports = function ($provide, transactionService) {
+  'use strict'
+  $provide.decorator('ngRepeatDirective', ['$delegate', '$injector', function ($delegate, $injector) {
+    var ngRepeat = $delegate[0]
+    var _compile = ngRepeat.compile
+
+    ngRepeat.compile = function () {
+      var _linkFn = _compile.apply(this, arguments)
+      return function () {
+        var scope = arguments[0]
+
+        var _watchCollection = scope.$watchCollection
+
+        scope.$watchCollection = function (watchExpression, reactionFunction) {
+          var watchStr = humanReadableWatchExpression(watchExpression)
+          if (typeof reactionFunction === 'function') {
+            // todo: angular $watchCollection only sends oldValue if (listenerFn.length > 1)
+            arguments[1] = function (newValue) {
+              var runtimeInfo = ''
+              if (watchStr != null) {
+                var arrayLength = Array.isArray(newValue) ? '[' + newValue.length + ']' : ''
+                runtimeInfo = watchStr + arrayLength
+              }
+
+              var traceName = 'ngRepeat ' + runtimeInfo
+              var traceType = 'template.ngRepeat'
+              var trace = transactionService.startTrace(traceName, traceType, { 'enableStackFrames': false })
+              var ret = reactionFunction.apply(this, arguments)
+
+              if (!utils.isUndefined(trace)) {
+                trace.end()
+              }
+              return ret
+            }
+          }
+          _watchCollection.apply(this, arguments)
+        }
+        var ret = _linkFn.apply(this, arguments)
+
+        // Should set $watchCollection back since the scope could be shared with other components
+        scope.$watchCollection = _watchCollection
+        return ret
+      }
+    }
+    return $delegate
+  }])
+}
+
+function humanReadableWatchExpression (fn) {
+  if (fn == null) {
+    return null
+  }
+  if (fn.exp) {
+    fn = fn.exp
+  } else if (fn.name) {
+    fn = fn.name
+  }
+  return fn.toString()
+}
+
+},{"opbeat-js-core":13}],36:[function(_dereq_,module,exports){
+
+module.exports = function patchExceptionHandler ($provide) {
+  $provide.decorator('$exceptionHandler', ['$delegate', '$opbeat', function $ExceptionHandlerDecorator ($delegate, $opbeat) {
+    return function $ExceptionHandler (exception, cause) {
+      $opbeat.captureException(exception)
+      return $delegate(exception, cause)
+    }
+  }])
+}
 
 },{}],37:[function(_dereq_,module,exports){
-(function (process){
-/******/ (function(modules) { // webpackBootstrap
-/******/ 	// The module cache
-/******/ 	var installedModules = {};
+module.exports = function ($provide, transactionService) {
+  'use strict'
+  function patchEventDirective (delegate, eventName) {
+    var nativeCompile = delegate.compile
+    delegate.compile = function () {
+      var nativeLink = nativeCompile.apply(this, arguments)
+      return function (scope, element, attributes) {
+        var directiveName = attributes.$normalize('ng-' + eventName)
+        var action = attributes[directiveName]
+        element.on(eventName, function (event) {
+          transactionService.startTransaction(directiveName + ': ' + action, 'interaction')
+        })
+        return nativeLink.apply(this, arguments)
+      }
+    }
+  }
 
-/******/ 	// The require function
-/******/ 	function __webpack_require__(moduleId) {
+  $provide.decorator('ngSubmitDirective', ['$delegate', '$injector', function ($delegate, $injector) {
+    var directive = $delegate[0]
+    patchEventDirective(directive, 'submit')
+    return $delegate
+  }])
 
-/******/ 		// Check if module is in cache
-/******/ 		if(installedModules[moduleId])
-/******/ 			return installedModules[moduleId].exports;
+  $provide.decorator('ngClickDirective', ['$delegate', '$injector', function ($delegate, $injector) {
+    var ngClick = $delegate[0]
+    patchEventDirective(ngClick, 'click')
+    return $delegate
+  }])
+}
 
-/******/ 		// Create a new module (and put it into the cache)
-/******/ 		var module = installedModules[moduleId] = {
-/******/ 			exports: {},
-/******/ 			id: moduleId,
-/******/ 			loaded: false
-/******/ 		};
+},{}],38:[function(_dereq_,module,exports){
+module.exports = function ($provide, transactionService) {
+  $provide.decorator('$rootScope', ['$delegate', '$injector', function ($delegate, $injector) {
+    return decorateRootScope($delegate, transactionService)
+  }])
+}
 
-/******/ 		// Execute the module function
-/******/ 		modules[moduleId].call(module.exports, module, module.exports, __webpack_require__);
+function decorateRootScope ($delegate, transactionService) {
+  var scopePrototype = ('getPrototypeOf' in Object)
+    ? Object.getPrototypeOf($delegate) : $delegate.__proto__ // eslint-disable-line 
 
-/******/ 		// Flag the module as loaded
-/******/ 		module.loaded = true;
+  var _digest = scopePrototype.$digest
+  scopePrototype.$digest = function () {
+    var trace = transactionService.startTrace('$scope.$digest', 'app.$digest', {'enableStackFrames': false})
+    var ret = _digest.apply(this, arguments)
+    if (trace) {
+      trace.end()
+    }
+    return ret
+  }
+  return $delegate
+}
 
-/******/ 		// Return the exports of the module
-/******/ 		return module.exports;
-/******/ 	}
-
-
-/******/ 	// expose the modules object (__webpack_modules__)
-/******/ 	__webpack_require__.m = modules;
-
-/******/ 	// expose the module cache
-/******/ 	__webpack_require__.c = installedModules;
-
-/******/ 	// __webpack_public_path__
-/******/ 	__webpack_require__.p = "";
-
-/******/ 	// Load entry module and return exports
-/******/ 	return __webpack_require__(0);
-/******/ })
-/************************************************************************/
-/******/ ([
-/* 0 */
-/***/ function(module, exports, __webpack_require__) {
-
-	/* WEBPACK VAR INJECTION */(function(global) {"use strict";
-	__webpack_require__(1);
-	var event_target_1 = __webpack_require__(2);
-	var define_property_1 = __webpack_require__(4);
-	var register_element_1 = __webpack_require__(5);
-	var property_descriptor_1 = __webpack_require__(6);
-	var timers_1 = __webpack_require__(8);
-	var utils_1 = __webpack_require__(3);
-	var set = 'set';
-	var clear = 'clear';
-	var blockingMethods = ['alert', 'prompt', 'confirm'];
-	var _global = typeof window == 'undefined' ? global : window;
-	timers_1.patchTimer(_global, set, clear, 'Timeout');
-	timers_1.patchTimer(_global, set, clear, 'Interval');
-	timers_1.patchTimer(_global, set, clear, 'Immediate');
-	timers_1.patchTimer(_global, 'request', 'cancel', 'AnimationFrame');
-	timers_1.patchTimer(_global, 'mozRequest', 'mozCancel', 'AnimationFrame');
-	timers_1.patchTimer(_global, 'webkitRequest', 'webkitCancel', 'AnimationFrame');
-	for (var i = 0; i < blockingMethods.length; i++) {
-	    var name = blockingMethods[i];
-	    utils_1.patchMethod(_global, name, function (delegate, symbol, name) {
-	        return function (s, args) {
-	            return Zone.current.run(delegate, _global, args, name);
-	        };
-	    });
-	}
-	event_target_1.eventTargetPatch(_global);
-	property_descriptor_1.propertyDescriptorPatch(_global);
-	utils_1.patchClass('MutationObserver');
-	utils_1.patchClass('WebKitMutationObserver');
-	utils_1.patchClass('FileReader');
-	define_property_1.propertyPatch();
-	register_element_1.registerElementPatch(_global);
-	// Treat XMLHTTPRequest as a macrotask.
-	patchXHR(_global);
-	var XHR_TASK = utils_1.zoneSymbol('xhrTask');
-	function patchXHR(window) {
-	    function findPendingTask(target) {
-	        var pendingTask = target[XHR_TASK];
-	        return pendingTask;
-	    }
-	    function scheduleTask(task) {
-	        var data = task.data;
-	        data.target.addEventListener('readystatechange', function () {
-	            if (data.target.readyState === data.target.DONE) {
-	                if (!data.aborted) {
-	                    task.invoke();
-	                }
-	            }
-	        });
-	        var storedTask = data.target[XHR_TASK];
-	        if (!storedTask) {
-	            data.target[XHR_TASK] = task;
-	        }
-	        setNative.apply(data.target, data.args);
-	        return task;
-	    }
-	    function placeholderCallback() {
-	    }
-	    function clearTask(task) {
-	        var data = task.data;
-	        // Note - ideally, we would call data.target.removeEventListener here, but it's too late
-	        // to prevent it from firing. So instead, we store info for the event listener.
-	        data.aborted = true;
-	        return clearNative.apply(data.target, data.args);
-	    }
-	    var setNative = utils_1.patchMethod(window.XMLHttpRequest.prototype, 'send', function () { return function (self, args) {
-	        var zone = Zone.current;
-	        var options = {
-	            target: self,
-	            isPeriodic: false,
-	            delay: null,
-	            args: args,
-	            aborted: false
-	        };
-	        return zone.scheduleMacroTask('XMLHttpRequest.send', placeholderCallback, options, scheduleTask, clearTask);
-	    }; });
-	    var clearNative = utils_1.patchMethod(window.XMLHttpRequest.prototype, 'abort', function (delegate) { return function (self, args) {
-	        var task = findPendingTask(self);
-	        if (task && typeof task.type == 'string') {
-	            // If the XHR has already completed, do nothing.
-	            if (task.cancelFn == null) {
-	                return;
-	            }
-	            task.zone.cancelTask(task);
-	        }
-	        // Otherwise, we are trying to abort an XHR which has not yet been sent, so there is no task to cancel. Do nothing.
-	    }; });
-	}
-	/// GEO_LOCATION
-	if (_global['navigator'] && _global['navigator'].geolocation) {
-	    utils_1.patchPrototype(_global['navigator'].geolocation, [
-	        'getCurrentPosition',
-	        'watchPosition'
-	    ]);
-	}
-
-	/* WEBPACK VAR INJECTION */}.call(exports, (function() { return this; }())))
-
-/***/ },
-/* 1 */
-/***/ function(module, exports) {
-
-	/* WEBPACK VAR INJECTION */(function(global) {;
-	;
-	var Zone = (function (global) {
-	    if (global.Zone) {
-	        throw new Error('Zone already loaded.');
-	    }
-	    var Zone = (function () {
-	        function Zone(parent, zoneSpec) {
-	            this._properties = null;
-	            this._parent = parent;
-	            this._name = zoneSpec ? zoneSpec.name || 'unnamed' : '<root>';
-	            this._properties = zoneSpec && zoneSpec.properties || {};
-	            this._zoneDelegate = new ZoneDelegate(this, this._parent && this._parent._zoneDelegate, zoneSpec);
-	        }
-	        Object.defineProperty(Zone, "current", {
-	            get: function () { return _currentZone; },
-	            enumerable: true,
-	            configurable: true
-	        });
-	        ;
-	        Object.defineProperty(Zone, "currentTask", {
-	            get: function () { return _currentTask; },
-	            enumerable: true,
-	            configurable: true
-	        });
-	        ;
-	        Object.defineProperty(Zone.prototype, "parent", {
-	            get: function () { return this._parent; },
-	            enumerable: true,
-	            configurable: true
-	        });
-	        ;
-	        Object.defineProperty(Zone.prototype, "name", {
-	            get: function () { return this._name; },
-	            enumerable: true,
-	            configurable: true
-	        });
-	        ;
-	        Zone.prototype.get = function (key) {
-	            var zone = this.getZoneWith(key);
-	            if (zone)
-	                return zone._properties[key];
-	        };
-	        Zone.prototype.getZoneWith = function (key) {
-	            var current = this;
-	            while (current) {
-	                if (current._properties.hasOwnProperty(key)) {
-	                    return current;
-	                }
-	                current = current._parent;
-	            }
-	            return null;
-	        };
-	        Zone.prototype.fork = function (zoneSpec) {
-	            if (!zoneSpec)
-	                throw new Error('ZoneSpec required!');
-	            return this._zoneDelegate.fork(this, zoneSpec);
-	        };
-	        Zone.prototype.wrap = function (callback, source) {
-	            if (typeof callback !== 'function') {
-	                throw new Error('Expecting function got: ' + callback);
-	            }
-	            var _callback = this._zoneDelegate.intercept(this, callback, source);
-	            var zone = this;
-	            return function () {
-	                return zone.runGuarded(_callback, this, arguments, source);
-	            };
-	        };
-	        Zone.prototype.run = function (callback, applyThis, applyArgs, source) {
-	            if (applyThis === void 0) { applyThis = null; }
-	            if (applyArgs === void 0) { applyArgs = null; }
-	            if (source === void 0) { source = null; }
-	            var oldZone = _currentZone;
-	            _currentZone = this;
-	            try {
-	                return this._zoneDelegate.invoke(this, callback, applyThis, applyArgs, source);
-	            }
-	            finally {
-	                _currentZone = oldZone;
-	            }
-	        };
-	        Zone.prototype.runGuarded = function (callback, applyThis, applyArgs, source) {
-	            if (applyThis === void 0) { applyThis = null; }
-	            if (applyArgs === void 0) { applyArgs = null; }
-	            if (source === void 0) { source = null; }
-	            var oldZone = _currentZone;
-	            _currentZone = this;
-	            try {
-	                try {
-	                    return this._zoneDelegate.invoke(this, callback, applyThis, applyArgs, source);
-	                }
-	                catch (error) {
-	                    if (this._zoneDelegate.handleError(this, error)) {
-	                        throw error;
-	                    }
-	                }
-	            }
-	            finally {
-	                _currentZone = oldZone;
-	            }
-	        };
-	        Zone.prototype.runTask = function (task, applyThis, applyArgs) {
-	            task.runCount++;
-	            if (task.zone != this)
-	                throw new Error('A task can only be run in the zone which created it! (Creation: ' +
-	                    task.zone.name + '; Execution: ' + this.name + ')');
-	            var previousTask = _currentTask;
-	            _currentTask = task;
-	            var oldZone = _currentZone;
-	            _currentZone = this;
-	            try {
-	                if (task.type == 'macroTask' && task.data && !task.data.isPeriodic) {
-	                    task.cancelFn = null;
-	                }
-	                try {
-	                    return this._zoneDelegate.invokeTask(this, task, applyThis, applyArgs);
-	                }
-	                catch (error) {
-	                    if (this._zoneDelegate.handleError(this, error)) {
-	                        throw error;
-	                    }
-	                }
-	            }
-	            finally {
-	                _currentZone = oldZone;
-	                _currentTask = previousTask;
-	            }
-	        };
-	        Zone.prototype.scheduleMicroTask = function (source, callback, data, customSchedule) {
-	            return this._zoneDelegate.scheduleTask(this, new ZoneTask('microTask', this, source, callback, data, customSchedule, null));
-	        };
-	        Zone.prototype.scheduleMacroTask = function (source, callback, data, customSchedule, customCancel) {
-	            return this._zoneDelegate.scheduleTask(this, new ZoneTask('macroTask', this, source, callback, data, customSchedule, customCancel));
-	        };
-	        Zone.prototype.scheduleEventTask = function (source, callback, data, customSchedule, customCancel) {
-	            return this._zoneDelegate.scheduleTask(this, new ZoneTask('eventTask', this, source, callback, data, customSchedule, customCancel));
-	        };
-	        Zone.prototype.cancelTask = function (task) {
-	            var value = this._zoneDelegate.cancelTask(this, task);
-	            task.runCount = -1;
-	            task.cancelFn = null;
-	            return value;
-	        };
-	        Zone.__symbol__ = __symbol__;
-	        return Zone;
-	    }());
-	    ;
-	    var ZoneDelegate = (function () {
-	        function ZoneDelegate(zone, parentDelegate, zoneSpec) {
-	            this._taskCounts = { microTask: 0, macroTask: 0, eventTask: 0 };
-	            this.zone = zone;
-	            this._parentDelegate = parentDelegate;
-	            this._forkZS = zoneSpec && (zoneSpec && zoneSpec.onFork ? zoneSpec : parentDelegate._forkZS);
-	            this._forkDlgt = zoneSpec && (zoneSpec.onFork ? parentDelegate : parentDelegate._forkDlgt);
-	            this._interceptZS = zoneSpec && (zoneSpec.onIntercept ? zoneSpec : parentDelegate._interceptZS);
-	            this._interceptDlgt = zoneSpec && (zoneSpec.onIntercept ? parentDelegate : parentDelegate._interceptDlgt);
-	            this._invokeZS = zoneSpec && (zoneSpec.onInvoke ? zoneSpec : parentDelegate._invokeZS);
-	            this._invokeDlgt = zoneSpec && (zoneSpec.onInvoke ? parentDelegate : parentDelegate._invokeDlgt);
-	            this._handleErrorZS = zoneSpec && (zoneSpec.onHandleError ? zoneSpec : parentDelegate._handleErrorZS);
-	            this._handleErrorDlgt = zoneSpec && (zoneSpec.onHandleError ? parentDelegate : parentDelegate._handleErrorDlgt);
-	            this._scheduleTaskZS = zoneSpec && (zoneSpec.onScheduleTask ? zoneSpec : parentDelegate._scheduleTaskZS);
-	            this._scheduleTaskDlgt = zoneSpec && (zoneSpec.onScheduleTask ? parentDelegate : parentDelegate._scheduleTaskDlgt);
-	            this._invokeTaskZS = zoneSpec && (zoneSpec.onInvokeTask ? zoneSpec : parentDelegate._invokeTaskZS);
-	            this._invokeTaskDlgt = zoneSpec && (zoneSpec.onInvokeTask ? parentDelegate : parentDelegate._invokeTaskDlgt);
-	            this._cancelTaskZS = zoneSpec && (zoneSpec.onCancelTask ? zoneSpec : parentDelegate._cancelTaskZS);
-	            this._cancelTaskDlgt = zoneSpec && (zoneSpec.onCancelTask ? parentDelegate : parentDelegate._cancelTaskDlgt);
-	            this._hasTaskZS = zoneSpec && (zoneSpec.onHasTask ? zoneSpec : parentDelegate._hasTaskZS);
-	            this._hasTaskDlgt = zoneSpec && (zoneSpec.onHasTask ? parentDelegate : parentDelegate._hasTaskDlgt);
-	        }
-	        ZoneDelegate.prototype.fork = function (targetZone, zoneSpec) {
-	            return this._forkZS
-	                ? this._forkZS.onFork(this._forkDlgt, this.zone, targetZone, zoneSpec)
-	                : new Zone(targetZone, zoneSpec);
-	        };
-	        ZoneDelegate.prototype.intercept = function (targetZone, callback, source) {
-	            return this._interceptZS
-	                ? this._interceptZS.onIntercept(this._interceptDlgt, this.zone, targetZone, callback, source)
-	                : callback;
-	        };
-	        ZoneDelegate.prototype.invoke = function (targetZone, callback, applyThis, applyArgs, source) {
-	            return this._invokeZS
-	                ? this._invokeZS.onInvoke(this._invokeDlgt, this.zone, targetZone, callback, applyThis, applyArgs, source)
-	                : callback.apply(applyThis, applyArgs);
-	        };
-	        ZoneDelegate.prototype.handleError = function (targetZone, error) {
-	            return this._handleErrorZS
-	                ? this._handleErrorZS.onHandleError(this._handleErrorDlgt, this.zone, targetZone, error)
-	                : true;
-	        };
-	        ZoneDelegate.prototype.scheduleTask = function (targetZone, task) {
-	            try {
-	                if (this._scheduleTaskZS) {
-	                    return this._scheduleTaskZS.onScheduleTask(this._scheduleTaskDlgt, this.zone, targetZone, task);
-	                }
-	                else if (task.scheduleFn) {
-	                    task.scheduleFn(task);
-	                }
-	                else if (task.type == 'microTask') {
-	                    scheduleMicroTask(task);
-	                }
-	                else {
-	                    throw new Error('Task is missing scheduleFn.');
-	                }
-	                return task;
-	            }
-	            finally {
-	                if (targetZone == this.zone) {
-	                    this._updateTaskCount(task.type, 1);
-	                }
-	            }
-	        };
-	        ZoneDelegate.prototype.invokeTask = function (targetZone, task, applyThis, applyArgs) {
-	            try {
-	                return this._invokeTaskZS
-	                    ? this._invokeTaskZS.onInvokeTask(this._invokeTaskDlgt, this.zone, targetZone, task, applyThis, applyArgs)
-	                    : task.callback.apply(applyThis, applyArgs);
-	            }
-	            finally {
-	                if (targetZone == this.zone && (task.type != 'eventTask') && !(task.data && task.data.isPeriodic)) {
-	                    this._updateTaskCount(task.type, -1);
-	                }
-	            }
-	        };
-	        ZoneDelegate.prototype.cancelTask = function (targetZone, task) {
-	            var value;
-	            if (this._cancelTaskZS) {
-	                value = this._cancelTaskZS.onCancelTask(this._cancelTaskDlgt, this.zone, targetZone, task);
-	            }
-	            else if (!task.cancelFn) {
-	                return; // throw new Error('Task does not support cancellation, or is already canceled.');
-	            }
-	            else {
-	                value = task.cancelFn(task);
-	            }
-	            if (targetZone == this.zone) {
-	                // this should not be in the finally block, because exceptions assume not canceled.
-	                this._updateTaskCount(task.type, -1);
-	            }
-	            return value;
-	        };
-	        ZoneDelegate.prototype.hasTask = function (targetZone, isEmpty) {
-	            return this._hasTaskZS && this._hasTaskZS.onHasTask(this._hasTaskDlgt, this.zone, targetZone, isEmpty);
-	        };
-	        ZoneDelegate.prototype._updateTaskCount = function (type, count) {
-	            var counts = this._taskCounts;
-	            var prev = counts[type];
-	            var next = counts[type] = prev + count;
-	            if (next < 0) {
-	                return; // throw new Error('More tasks executed then were scheduled.');
-	            }
-	            if (prev == 0 || next == 0) {
-	                var isEmpty = {
-	                    microTask: counts.microTask > 0,
-	                    macroTask: counts.macroTask > 0,
-	                    eventTask: counts.eventTask > 0,
-	                    change: type
-	                };
-	                try {
-	                    this.hasTask(this.zone, isEmpty);
-	                }
-	                finally {
-	                    if (this._parentDelegate) {
-	                        this._parentDelegate._updateTaskCount(type, count);
-	                    }
-	                }
-	            }
-	        };
-	        return ZoneDelegate;
-	    }());
-	    var ZoneTask = (function () {
-	        function ZoneTask(type, zone, source, callback, options, scheduleFn, cancelFn) {
-	            this.runCount = 0;
-	            this.type = type;
-	            this.zone = zone;
-	            this.source = source;
-	            this.data = options;
-	            this.scheduleFn = scheduleFn;
-	            this.cancelFn = cancelFn;
-	            this.callback = callback;
-	            var self = this;
-	            this.invoke = function () {
-	                _numberOfNestedTaskFrames++;
-	                try {
-	                    return zone.runTask(self, this, arguments);
-	                }
-	                finally {
-	                    if (_numberOfNestedTaskFrames == 1) {
-	                        drainMicroTaskQueue();
-	                    }
-	                    _numberOfNestedTaskFrames--;
-	                }
-	            };
-	        }
-	        ZoneTask.prototype.toString = function () {
-	            if (this.data && typeof this.data.handleId !== 'undefined') {
-	                return this.data.handleId;
-	            }
-	            else {
-	                return this.toString();
-	            }
-	        };
-	        return ZoneTask;
-	    }());
-	    function __symbol__(name) { return '__zone_symbol__' + name; }
-	    ;
-	    var symbolSetTimeout = __symbol__('setTimeout');
-	    var symbolPromise = __symbol__('Promise');
-	    var symbolThen = __symbol__('then');
-	    var _currentZone = new Zone(null, null);
-	    var _currentTask = null;
-	    var _microTaskQueue = [];
-	    var _isDrainingMicrotaskQueue = false;
-	    var _uncaughtPromiseErrors = [];
-	    var _numberOfNestedTaskFrames = 0;
-	    function scheduleQueueDrain() {
-	        // if we are not running in any task, and there has not been anything scheduled
-	        // we must bootstrap the initial task creation by manually scheduling the drain
-	        if (_numberOfNestedTaskFrames == 0 && _microTaskQueue.length == 0) {
-	            // We are not running in Task, so we need to kickstart the microtask queue.
-	            if (global[symbolPromise]) {
-	                global[symbolPromise].resolve(0)[symbolThen](drainMicroTaskQueue);
-	            }
-	            else {
-	                global[symbolSetTimeout](drainMicroTaskQueue, 0);
-	            }
-	        }
-	    }
-	    function scheduleMicroTask(task) {
-	        scheduleQueueDrain();
-	        _microTaskQueue.push(task);
-	    }
-	    function consoleError(e) {
-	        var rejection = e && e.rejection;
-	        if (rejection) {
-	            console.error('Unhandled Promise rejection:', rejection instanceof Error ? rejection.message : rejection, '; Zone:', e.zone.name, '; Task:', e.task && e.task.source, '; Value:', rejection, rejection instanceof Error ? rejection.stack : undefined);
-	        }
-	        console.error(e);
-	    }
-	    function drainMicroTaskQueue() {
-	        if (!_isDrainingMicrotaskQueue) {
-	            _isDrainingMicrotaskQueue = true;
-	            while (_microTaskQueue.length) {
-	                var queue = _microTaskQueue;
-	                _microTaskQueue = [];
-	                for (var i = 0; i < queue.length; i++) {
-	                    var task = queue[i];
-	                    try {
-	                        task.zone.runTask(task, null, null);
-	                    }
-	                    catch (e) {
-	                        consoleError(e);
-	                    }
-	                }
-	            }
-	            while (_uncaughtPromiseErrors.length) {
-	                var _loop_1 = function() {
-	                    var uncaughtPromiseError = _uncaughtPromiseErrors.shift();
-	                    try {
-	                        uncaughtPromiseError.zone.runGuarded(function () { throw uncaughtPromiseError; });
-	                    }
-	                    catch (e) {
-	                        consoleError(e);
-	                    }
-	                };
-	                while (_uncaughtPromiseErrors.length) {
-	                    _loop_1();
-	                }
-	            }
-	            _isDrainingMicrotaskQueue = false;
-	        }
-	    }
-	    function isThenable(value) {
-	        return value && value.then;
-	    }
-	    function forwardResolution(value) { return value; }
-	    function forwardRejection(rejection) { return ZoneAwarePromise.reject(rejection); }
-	    var symbolState = __symbol__('state');
-	    var symbolValue = __symbol__('value');
-	    var source = 'Promise.then';
-	    var UNRESOLVED = null;
-	    var RESOLVED = true;
-	    var REJECTED = false;
-	    var REJECTED_NO_CATCH = 0;
-	    function makeResolver(promise, state) {
-	        return function (v) {
-	            resolvePromise(promise, state, v);
-	            // Do not return value or you will break the Promise spec.
-	        };
-	    }
-	    function resolvePromise(promise, state, value) {
-	        if (promise[symbolState] === UNRESOLVED) {
-	            if (value instanceof ZoneAwarePromise && value[symbolState] !== UNRESOLVED) {
-	                clearRejectedNoCatch(value);
-	                resolvePromise(promise, value[symbolState], value[symbolValue]);
-	            }
-	            else if (isThenable(value)) {
-	                value.then(makeResolver(promise, state), makeResolver(promise, false));
-	            }
-	            else {
-	                promise[symbolState] = state;
-	                var queue = promise[symbolValue];
-	                promise[symbolValue] = value;
-	                for (var i = 0; i < queue.length;) {
-	                    scheduleResolveOrReject(promise, queue[i++], queue[i++], queue[i++], queue[i++]);
-	                }
-	                if (queue.length == 0 && state == REJECTED) {
-	                    promise[symbolState] = REJECTED_NO_CATCH;
-	                    try {
-	                        throw new Error("Uncaught (in promise): " + value);
-	                    }
-	                    catch (e) {
-	                        var error = e;
-	                        error.rejection = value;
-	                        error.promise = promise;
-	                        error.zone = Zone.current;
-	                        error.task = Zone.currentTask;
-	                        _uncaughtPromiseErrors.push(error);
-	                        scheduleQueueDrain();
-	                    }
-	                }
-	            }
-	        }
-	        // Resolving an already resolved promise is a noop.
-	        return promise;
-	    }
-	    function clearRejectedNoCatch(promise) {
-	        if (promise[symbolState] === REJECTED_NO_CATCH) {
-	            promise[symbolState] = REJECTED;
-	            for (var i = 0; i < _uncaughtPromiseErrors.length; i++) {
-	                if (promise === _uncaughtPromiseErrors[i].promise) {
-	                    _uncaughtPromiseErrors.splice(i, 1);
-	                    break;
-	                }
-	            }
-	        }
-	    }
-	    function scheduleResolveOrReject(promise, zone, chainPromise, onFulfilled, onRejected) {
-	        clearRejectedNoCatch(promise);
-	        var delegate = promise[symbolState] ? onFulfilled || forwardResolution : onRejected || forwardRejection;
-	        zone.scheduleMicroTask(source, function () {
-	            try {
-	                resolvePromise(chainPromise, true, zone.run(delegate, null, [promise[symbolValue]]));
-	            }
-	            catch (error) {
-	                resolvePromise(chainPromise, false, error);
-	            }
-	        });
-	    }
-	    var ZoneAwarePromise = (function () {
-	        function ZoneAwarePromise(executor) {
-	            var promise = this;
-	            if (!(promise instanceof ZoneAwarePromise)) {
-	                throw new Error('Must be an instanceof Promise.');
-	            }
-	            promise[symbolState] = UNRESOLVED;
-	            promise[symbolValue] = []; // queue;
-	            try {
-	                executor && executor(makeResolver(promise, RESOLVED), makeResolver(promise, REJECTED));
-	            }
-	            catch (e) {
-	                resolvePromise(promise, false, e);
-	            }
-	        }
-	        ZoneAwarePromise.resolve = function (value) {
-	            return resolvePromise(new this(null), RESOLVED, value);
-	        };
-	        ZoneAwarePromise.reject = function (error) {
-	            return resolvePromise(new this(null), REJECTED, error);
-	        };
-	        ZoneAwarePromise.race = function (values) {
-	            var resolve;
-	            var reject;
-	            var promise = new this(function (res, rej) { resolve = res; reject = rej; });
-	            function onResolve(value) { promise && (promise = null || resolve(value)); }
-	            function onReject(error) { promise && (promise = null || reject(error)); }
-	            for (var _i = 0, values_1 = values; _i < values_1.length; _i++) {
-	                var value = values_1[_i];
-	                if (!isThenable(value)) {
-	                    value = this.resolve(value);
-	                }
-	                value.then(onResolve, onReject);
-	            }
-	            return promise;
-	        };
-	        ZoneAwarePromise.all = function (values) {
-	            var resolve;
-	            var reject;
-	            var promise = new this(function (res, rej) { resolve = res; reject = rej; });
-	            var count = 0;
-	            var resolvedValues = [];
-	            function onReject(error) { promise && reject(error); promise = null; }
-	            for (var _i = 0, values_2 = values; _i < values_2.length; _i++) {
-	                var value = values_2[_i];
-	                if (!isThenable(value)) {
-	                    value = this.resolve(value);
-	                }
-	                value.then((function (index) { return function (value) {
-	                    resolvedValues[index] = value;
-	                    count--;
-	                    if (promise && !count) {
-	                        resolve(resolvedValues);
-	                    }
-	                    promise == null;
-	                }; })(count), onReject);
-	                count++;
-	            }
-	            if (!count)
-	                resolve(resolvedValues);
-	            return promise;
-	        };
-	        ZoneAwarePromise.prototype.then = function (onFulfilled, onRejected) {
-	            var chainPromise = new this.constructor(null);
-	            var zone = Zone.current;
-	            if (this[symbolState] == UNRESOLVED) {
-	                this[symbolValue].push(zone, chainPromise, onFulfilled, onRejected);
-	            }
-	            else {
-	                scheduleResolveOrReject(this, zone, chainPromise, onFulfilled, onRejected);
-	            }
-	            return chainPromise;
-	        };
-	        ZoneAwarePromise.prototype.catch = function (onRejected) {
-	            return this.then(null, onRejected);
-	        };
-	        return ZoneAwarePromise;
-	    }());
-	    var NativePromise = global[__symbol__('Promise')] = global.Promise;
-	    global.Promise = ZoneAwarePromise;
-	    if (NativePromise) {
-	        var NativePromiseProtototype = NativePromise.prototype;
-	        var NativePromiseThen_1 = NativePromiseProtototype[__symbol__('then')]
-	            = NativePromiseProtototype.then;
-	        NativePromiseProtototype.then = function (onResolve, onReject) {
-	            var nativePromise = this;
-	            return new ZoneAwarePromise(function (resolve, reject) {
-	                NativePromiseThen_1.call(nativePromise, resolve, reject);
-	            }).then(onResolve, onReject);
-	        };
-	    }
-	    // This is not part of public API, but it is usefull for tests, so we expose it.
-	    Promise[Zone.__symbol__('uncaughtPromiseErrors')] = _uncaughtPromiseErrors;
-	    return global.Zone = Zone;
-	})(typeof window === 'undefined' ? global : window);
-
-	/* WEBPACK VAR INJECTION */}.call(exports, (function() { return this; }())))
-
-/***/ },
-/* 2 */
-/***/ function(module, exports, __webpack_require__) {
-
-	"use strict";
-	var utils_1 = __webpack_require__(3);
-	var WTF_ISSUE_555 = 'Anchor,Area,Audio,BR,Base,BaseFont,Body,Button,Canvas,Content,DList,Directory,Div,Embed,FieldSet,Font,Form,Frame,FrameSet,HR,Head,Heading,Html,IFrame,Image,Input,Keygen,LI,Label,Legend,Link,Map,Marquee,Media,Menu,Meta,Meter,Mod,OList,Object,OptGroup,Option,Output,Paragraph,Pre,Progress,Quote,Script,Select,Source,Span,Style,TableCaption,TableCell,TableCol,Table,TableRow,TableSection,TextArea,Title,Track,UList,Unknown,Video';
-	var NO_EVENT_TARGET = 'ApplicationCache,EventSource,FileReader,InputMethodContext,MediaController,MessagePort,Node,Performance,SVGElementInstance,SharedWorker,TextTrack,TextTrackCue,TextTrackList,WebKitNamedFlow,Window,Worker,WorkerGlobalScope,XMLHttpRequest,XMLHttpRequestEventTarget,XMLHttpRequestUpload,IDBRequest,IDBOpenDBRequest,IDBDatabase,IDBTransaction,IDBCursor,DBIndex'.split(',');
-	var EVENT_TARGET = 'EventTarget';
-	function eventTargetPatch(_global) {
-	    var apis = [];
-	    var isWtf = _global['wtf'];
-	    if (isWtf) {
-	        // Workaround for: https://github.com/google/tracing-framework/issues/555
-	        apis = WTF_ISSUE_555.split(',').map(function (v) { return 'HTML' + v + 'Element'; }).concat(NO_EVENT_TARGET);
-	    }
-	    else if (_global[EVENT_TARGET]) {
-	        apis.push(EVENT_TARGET);
-	    }
-	    else {
-	        // Note: EventTarget is not available in all browsers,
-	        // if it's not available, we instead patch the APIs in the IDL that inherit from EventTarget
-	        apis = NO_EVENT_TARGET;
-	    }
-	    for (var i = 0; i < apis.length; i++) {
-	        var type = _global[apis[i]];
-	        utils_1.patchEventTargetMethods(type && type.prototype);
-	    }
-	}
-	exports.eventTargetPatch = eventTargetPatch;
-
-
-/***/ },
-/* 3 */
-/***/ function(module, exports) {
-
-	/* WEBPACK VAR INJECTION */(function(global) {/**
-	 * Suppress closure compiler errors about unknown 'process' variable
-	 * @fileoverview
-	 * @suppress {undefinedVars}
-	 */
-	"use strict";
-	exports.zoneSymbol = Zone['__symbol__'];
-	var _global = typeof window == 'undefined' ? global : window;
-	function bindArguments(args, source) {
-	    for (var i = args.length - 1; i >= 0; i--) {
-	        if (typeof args[i] === 'function') {
-	            args[i] = Zone.current.wrap(args[i], source + '_' + i);
-	        }
-	    }
-	    return args;
-	}
-	exports.bindArguments = bindArguments;
-	;
-	function patchPrototype(prototype, fnNames) {
-	    var source = prototype.constructor['name'];
-	    var _loop_1 = function(i) {
-	        var name_1 = fnNames[i];
-	        var delegate = prototype[name_1];
-	        if (delegate) {
-	            prototype[name_1] = (function (delegate) {
-	                return function () {
-	                    return delegate.apply(this, bindArguments(arguments, source + '.' + name_1));
-	                };
-	            })(delegate);
-	        }
-	    };
-	    for (var i = 0; i < fnNames.length; i++) {
-	        _loop_1(i);
-	    }
-	}
-	exports.patchPrototype = patchPrototype;
-	;
-	exports.isWebWorker = (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope);
-	exports.isNode = (typeof process !== 'undefined' && {}.toString.call(process) === '[object process]');
-	exports.isBrowser = !exports.isNode && !exports.isWebWorker && !!(typeof window !== 'undefined' && window['HTMLElement']);
-	function patchProperty(obj, prop) {
-	    var desc = Object.getOwnPropertyDescriptor(obj, prop) || {
-	        enumerable: true,
-	        configurable: true
-	    };
-	    // A property descriptor cannot have getter/setter and be writable
-	    // deleting the writable and value properties avoids this error:
-	    //
-	    // TypeError: property descriptors must not specify a value or be writable when a
-	    // getter or setter has been specified
-	    delete desc.writable;
-	    delete desc.value;
-	    // substr(2) cuz 'onclick' -> 'click', etc
-	    var eventName = prop.substr(2);
-	    var _prop = '_' + prop;
-	    desc.set = function (fn) {
-	        if (this[_prop]) {
-	            this.removeEventListener(eventName, this[_prop]);
-	        }
-	        if (typeof fn === 'function') {
-	            var wrapFn = function (event) {
-	                var result;
-	                result = fn.apply(this, arguments);
-	                if (result != undefined && !result)
-	                    event.preventDefault();
-	            };
-	            this[_prop] = wrapFn;
-	            this.addEventListener(eventName, wrapFn, false);
-	        }
-	        else {
-	            this[_prop] = null;
-	        }
-	    };
-	    // The getter would return undefined for unassigned properties but the default value of an unassigned property is null
-	    desc.get = function () {
-	        return this[_prop] || null;
-	    };
-	    Object.defineProperty(obj, prop, desc);
-	}
-	exports.patchProperty = patchProperty;
-	;
-	function patchOnProperties(obj, properties) {
-	    var onProperties = [];
-	    for (var prop in obj) {
-	        if (prop.substr(0, 2) == 'on') {
-	            onProperties.push(prop);
-	        }
-	    }
-	    for (var j = 0; j < onProperties.length; j++) {
-	        patchProperty(obj, onProperties[j]);
-	    }
-	    if (properties) {
-	        for (var i = 0; i < properties.length; i++) {
-	            patchProperty(obj, 'on' + properties[i]);
-	        }
-	    }
-	}
-	exports.patchOnProperties = patchOnProperties;
-	;
-	var EVENT_TASKS = exports.zoneSymbol('eventTasks');
-	var ADD_EVENT_LISTENER = 'addEventListener';
-	var REMOVE_EVENT_LISTENER = 'removeEventListener';
-	var SYMBOL_ADD_EVENT_LISTENER = exports.zoneSymbol(ADD_EVENT_LISTENER);
-	var SYMBOL_REMOVE_EVENT_LISTENER = exports.zoneSymbol(REMOVE_EVENT_LISTENER);
-	function findExistingRegisteredTask(target, handler, name, capture, remove) {
-	    var eventTasks = target[EVENT_TASKS];
-	    if (eventTasks) {
-	        for (var i = 0; i < eventTasks.length; i++) {
-	            var eventTask = eventTasks[i];
-	            var data = eventTask.data;
-	            if (data.handler === handler
-	                && data.useCapturing === capture
-	                && data.eventName === name) {
-	                if (remove) {
-	                    eventTasks.splice(i, 1);
-	                }
-	                return eventTask;
-	            }
-	        }
-	    }
-	    return null;
-	}
-	function attachRegisteredEvent(target, eventTask) {
-	    var eventTasks = target[EVENT_TASKS];
-	    if (!eventTasks) {
-	        eventTasks = target[EVENT_TASKS] = [];
-	    }
-	    eventTasks.push(eventTask);
-	}
-	function scheduleEventListener(eventTask) {
-	    var meta = eventTask.data;
-	    attachRegisteredEvent(meta.target, eventTask);
-	    return meta.target[SYMBOL_ADD_EVENT_LISTENER](meta.eventName, eventTask.invoke, meta.useCapturing);
-	}
-	function cancelEventListener(eventTask) {
-	    var meta = eventTask.data;
-	    findExistingRegisteredTask(meta.target, eventTask.invoke, meta.eventName, meta.useCapturing, true);
-	    meta.target[SYMBOL_REMOVE_EVENT_LISTENER](meta.eventName, eventTask.invoke, meta.useCapturing);
-	}
-	function zoneAwareAddEventListener(self, args) {
-	    var eventName = args[0];
-	    var handler = args[1];
-	    var useCapturing = args[2] || false;
-	    // - Inside a Web Worker, `this` is undefined, the context is `global`
-	    // - When `addEventListener` is called on the global context in strict mode, `this` is undefined
-	    // see https://github.com/angular/zone.js/issues/190
-	    var target = self || _global;
-	    var delegate = null;
-	    if (typeof handler == 'function') {
-	        delegate = handler;
-	    }
-	    else if (handler && handler.handleEvent) {
-	        delegate = function (event) { return handler.handleEvent(event); };
-	    }
-	    var validZoneHandler = false;
-	    try {
-	        // In cross site contexts (such as WebDriver frameworks like Selenium),
-	        // accessing the handler object here will cause an exception to be thrown which
-	        // will fail tests prematurely.
-	        validZoneHandler = handler && handler.toString() === "[object FunctionWrapper]";
-	    }
-	    catch (e) {
-	        // Returning nothing here is fine, because objects in a cross-site context are unusable
-	        return;
-	    }
-	    // Ignore special listeners of IE11 & Edge dev tools, see https://github.com/angular/zone.js/issues/150
-	    if (!delegate || validZoneHandler) {
-	        return target[SYMBOL_ADD_EVENT_LISTENER](eventName, handler, useCapturing);
-	    }
-	    var eventTask = findExistingRegisteredTask(target, handler, eventName, useCapturing, false);
-	    if (eventTask) {
-	        // we already registered, so this will have noop.
-	        return target[SYMBOL_ADD_EVENT_LISTENER](eventName, eventTask.invoke, useCapturing);
-	    }
-	    var zone = Zone.current;
-	    var source = target.constructor['name'] + '.addEventListener:' + eventName;
-	    var data = {
-	        target: target,
-	        eventName: eventName,
-	        name: eventName,
-	        useCapturing: useCapturing,
-	        handler: handler
-	    };
-	    zone.scheduleEventTask(source, delegate, data, scheduleEventListener, cancelEventListener);
-	}
-	function zoneAwareRemoveEventListener(self, args) {
-	    var eventName = args[0];
-	    var handler = args[1];
-	    var useCapturing = args[2] || false;
-	    // - Inside a Web Worker, `this` is undefined, the context is `global`
-	    // - When `addEventListener` is called on the global context in strict mode, `this` is undefined
-	    // see https://github.com/angular/zone.js/issues/190
-	    var target = self || _global;
-	    var eventTask = findExistingRegisteredTask(target, handler, eventName, useCapturing, true);
-	    if (eventTask) {
-	        eventTask.zone.cancelTask(eventTask);
-	    }
-	    else {
-	        target[SYMBOL_REMOVE_EVENT_LISTENER](eventName, handler, useCapturing);
-	    }
-	}
-	function patchEventTargetMethods(obj) {
-	    if (obj && obj.addEventListener) {
-	        patchMethod(obj, ADD_EVENT_LISTENER, function () { return zoneAwareAddEventListener; });
-	        patchMethod(obj, REMOVE_EVENT_LISTENER, function () { return zoneAwareRemoveEventListener; });
-	        return true;
-	    }
-	    else {
-	        return false;
-	    }
-	}
-	exports.patchEventTargetMethods = patchEventTargetMethods;
-	;
-	var originalInstanceKey = exports.zoneSymbol('originalInstance');
-	// wrap some native API on `window`
-	function patchClass(className) {
-	    var OriginalClass = _global[className];
-	    if (!OriginalClass)
-	        return;
-	    _global[className] = function () {
-	        var a = bindArguments(arguments, className);
-	        switch (a.length) {
-	            case 0:
-	                this[originalInstanceKey] = new OriginalClass();
-	                break;
-	            case 1:
-	                this[originalInstanceKey] = new OriginalClass(a[0]);
-	                break;
-	            case 2:
-	                this[originalInstanceKey] = new OriginalClass(a[0], a[1]);
-	                break;
-	            case 3:
-	                this[originalInstanceKey] = new OriginalClass(a[0], a[1], a[2]);
-	                break;
-	            case 4:
-	                this[originalInstanceKey] = new OriginalClass(a[0], a[1], a[2], a[3]);
-	                break;
-	            default: throw new Error('Arg list too long.');
-	        }
-	    };
-	    var instance = new OriginalClass(function () { });
-	    var prop;
-	    for (prop in instance) {
-	        // https://bugs.webkit.org/show_bug.cgi?id=44721
-	        if (className === 'XMLHttpRequest' && prop === 'responseBlob')
-	            continue;
-	        (function (prop) {
-	            if (typeof instance[prop] === 'function') {
-	                _global[className].prototype[prop] = function () {
-	                    return this[originalInstanceKey][prop].apply(this[originalInstanceKey], arguments);
-	                };
-	            }
-	            else {
-	                Object.defineProperty(_global[className].prototype, prop, {
-	                    set: function (fn) {
-	                        if (typeof fn === 'function') {
-	                            this[originalInstanceKey][prop] = Zone.current.wrap(fn, className + '.' + prop);
-	                        }
-	                        else {
-	                            this[originalInstanceKey][prop] = fn;
-	                        }
-	                    },
-	                    get: function () {
-	                        return this[originalInstanceKey][prop];
-	                    }
-	                });
-	            }
-	        }(prop));
-	    }
-	    for (prop in OriginalClass) {
-	        if (prop !== 'prototype' && OriginalClass.hasOwnProperty(prop)) {
-	            _global[className][prop] = OriginalClass[prop];
-	        }
-	    }
-	}
-	exports.patchClass = patchClass;
-	;
-	function createNamedFn(name, delegate) {
-	    try {
-	        return (Function('f', "return function " + name + "(){return f(this, arguments)}"))(delegate);
-	    }
-	    catch (e) {
-	        // if we fail, we must be CSP, just return delegate.
-	        return function () {
-	            return delegate(this, arguments);
-	        };
-	    }
-	}
-	exports.createNamedFn = createNamedFn;
-	function patchMethod(target, name, patchFn) {
-	    var proto = target;
-	    while (proto && !proto.hasOwnProperty(name)) {
-	        proto = Object.getPrototypeOf(proto);
-	    }
-	    if (!proto && target[name]) {
-	        // somehow we did not find it, but we can see it. This happens on IE for Window properties.
-	        proto = target;
-	    }
-	    var delegateName = exports.zoneSymbol(name);
-	    var delegate;
-	    if (proto && !(delegate = proto[delegateName])) {
-	        delegate = proto[delegateName] = proto[name];
-	        proto[name] = createNamedFn(name, patchFn(delegate, delegateName, name));
-	    }
-	    return delegate;
-	}
-	exports.patchMethod = patchMethod;
-
-	/* WEBPACK VAR INJECTION */}.call(exports, (function() { return this; }())))
-
-/***/ },
-/* 4 */
-/***/ function(module, exports, __webpack_require__) {
-
-	"use strict";
-	var utils_1 = __webpack_require__(3);
-	/*
-	 * This is necessary for Chrome and Chrome mobile, to enable
-	 * things like redefining `createdCallback` on an element.
-	 */
-	var _defineProperty = Object.defineProperty;
-	var _getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
-	var _create = Object.create;
-	var unconfigurablesKey = utils_1.zoneSymbol('unconfigurables');
-	function propertyPatch() {
-	    Object.defineProperty = function (obj, prop, desc) {
-	        if (isUnconfigurable(obj, prop)) {
-	            throw new TypeError('Cannot assign to read only property \'' + prop + '\' of ' + obj);
-	        }
-	        var originalConfigurableFlag = desc.configurable;
-	        if (prop !== 'prototype') {
-	            desc = rewriteDescriptor(obj, prop, desc);
-	        }
-	        return _tryDefineProperty(obj, prop, desc, originalConfigurableFlag);
-	    };
-	    Object.defineProperties = function (obj, props) {
-	        Object.keys(props).forEach(function (prop) {
-	            Object.defineProperty(obj, prop, props[prop]);
-	        });
-	        return obj;
-	    };
-	    Object.create = function (obj, proto) {
-	        if (typeof proto === 'object' && !Object.isFrozen(proto)) {
-	            Object.keys(proto).forEach(function (prop) {
-	                proto[prop] = rewriteDescriptor(obj, prop, proto[prop]);
-	            });
-	        }
-	        return _create(obj, proto);
-	    };
-	    Object.getOwnPropertyDescriptor = function (obj, prop) {
-	        var desc = _getOwnPropertyDescriptor(obj, prop);
-	        if (isUnconfigurable(obj, prop)) {
-	            desc.configurable = false;
-	        }
-	        return desc;
-	    };
-	}
-	exports.propertyPatch = propertyPatch;
-	;
-	function _redefineProperty(obj, prop, desc) {
-	    var originalConfigurableFlag = desc.configurable;
-	    desc = rewriteDescriptor(obj, prop, desc);
-	    return _tryDefineProperty(obj, prop, desc, originalConfigurableFlag);
-	}
-	exports._redefineProperty = _redefineProperty;
-	;
-	function isUnconfigurable(obj, prop) {
-	    return obj && obj[unconfigurablesKey] && obj[unconfigurablesKey][prop];
-	}
-	function rewriteDescriptor(obj, prop, desc) {
-	    desc.configurable = true;
-	    if (!desc.configurable) {
-	        if (!obj[unconfigurablesKey]) {
-	            _defineProperty(obj, unconfigurablesKey, { writable: true, value: {} });
-	        }
-	        obj[unconfigurablesKey][prop] = true;
-	    }
-	    return desc;
-	}
-	function _tryDefineProperty(obj, prop, desc, originalConfigurableFlag) {
-	    try {
-	        return _defineProperty(obj, prop, desc);
-	    }
-	    catch (e) {
-	        if (desc.configurable) {
-	            // In case of errors, when the configurable flag was likely set by rewriteDescriptor(), let's retry with the original flag value
-	            if (typeof originalConfigurableFlag == 'undefined') {
-	                delete desc.configurable;
-	            }
-	            else {
-	                desc.configurable = originalConfigurableFlag;
-	            }
-	            return _defineProperty(obj, prop, desc);
-	        }
-	        else {
-	            throw e;
-	        }
-	    }
-	}
-
-
-/***/ },
-/* 5 */
-/***/ function(module, exports, __webpack_require__) {
-
-	"use strict";
-	var define_property_1 = __webpack_require__(4);
-	var utils_1 = __webpack_require__(3);
-	function registerElementPatch(_global) {
-	    if (!utils_1.isBrowser || !('registerElement' in _global.document)) {
-	        return;
-	    }
-	    var _registerElement = document.registerElement;
-	    var callbacks = [
-	        'createdCallback',
-	        'attachedCallback',
-	        'detachedCallback',
-	        'attributeChangedCallback'
-	    ];
-	    document.registerElement = function (name, opts) {
-	        if (opts && opts.prototype) {
-	            callbacks.forEach(function (callback) {
-	                var source = 'Document.registerElement::' + callback;
-	                if (opts.prototype.hasOwnProperty(callback)) {
-	                    var descriptor = Object.getOwnPropertyDescriptor(opts.prototype, callback);
-	                    if (descriptor && descriptor.value) {
-	                        descriptor.value = Zone.current.wrap(descriptor.value, source);
-	                        define_property_1._redefineProperty(opts.prototype, callback, descriptor);
-	                    }
-	                    else {
-	                        opts.prototype[callback] = Zone.current.wrap(opts.prototype[callback], source);
-	                    }
-	                }
-	                else if (opts.prototype[callback]) {
-	                    opts.prototype[callback] = Zone.current.wrap(opts.prototype[callback], source);
-	                }
-	            });
-	        }
-	        return _registerElement.apply(document, [name, opts]);
-	    };
-	}
-	exports.registerElementPatch = registerElementPatch;
-
-
-/***/ },
-/* 6 */
-/***/ function(module, exports, __webpack_require__) {
-
-	"use strict";
-	var webSocketPatch = __webpack_require__(7);
-	var utils_1 = __webpack_require__(3);
-	var eventNames = 'copy cut paste abort blur focus canplay canplaythrough change click contextmenu dblclick drag dragend dragenter dragleave dragover dragstart drop durationchange emptied ended input invalid keydown keypress keyup load loadeddata loadedmetadata loadstart message mousedown mouseenter mouseleave mousemove mouseout mouseover mouseup pause play playing progress ratechange reset scroll seeked seeking select show stalled submit suspend timeupdate volumechange waiting mozfullscreenchange mozfullscreenerror mozpointerlockchange mozpointerlockerror error webglcontextrestored webglcontextlost webglcontextcreationerror'.split(' ');
-	function propertyDescriptorPatch(_global) {
-	    if (utils_1.isNode) {
-	        return;
-	    }
-	    var supportsWebSocket = typeof WebSocket !== 'undefined';
-	    if (canPatchViaPropertyDescriptor()) {
-	        // for browsers that we can patch the descriptor:  Chrome & Firefox
-	        if (utils_1.isBrowser) {
-	            utils_1.patchOnProperties(HTMLElement.prototype, eventNames);
-	        }
-	        utils_1.patchOnProperties(XMLHttpRequest.prototype, null);
-	        if (typeof IDBIndex !== 'undefined') {
-	            utils_1.patchOnProperties(IDBIndex.prototype, null);
-	            utils_1.patchOnProperties(IDBRequest.prototype, null);
-	            utils_1.patchOnProperties(IDBOpenDBRequest.prototype, null);
-	            utils_1.patchOnProperties(IDBDatabase.prototype, null);
-	            utils_1.patchOnProperties(IDBTransaction.prototype, null);
-	            utils_1.patchOnProperties(IDBCursor.prototype, null);
-	        }
-	        if (supportsWebSocket) {
-	            utils_1.patchOnProperties(WebSocket.prototype, null);
-	        }
-	    }
-	    else {
-	        // Safari, Android browsers (Jelly Bean)
-	        patchViaCapturingAllTheEvents();
-	        utils_1.patchClass('XMLHttpRequest');
-	        if (supportsWebSocket) {
-	            webSocketPatch.apply(_global);
-	        }
-	    }
-	}
-	exports.propertyDescriptorPatch = propertyDescriptorPatch;
-	function canPatchViaPropertyDescriptor() {
-	    if (utils_1.isBrowser && !Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'onclick')
-	        && typeof Element !== 'undefined') {
-	        // WebKit https://bugs.webkit.org/show_bug.cgi?id=134364
-	        // IDL interface attributes are not configurable
-	        var desc = Object.getOwnPropertyDescriptor(Element.prototype, 'onclick');
-	        if (desc && !desc.configurable)
-	            return false;
-	    }
-	    Object.defineProperty(XMLHttpRequest.prototype, 'onreadystatechange', {
-	        get: function () {
-	            return true;
-	        }
-	    });
-	    var req = new XMLHttpRequest();
-	    var result = !!req.onreadystatechange;
-	    Object.defineProperty(XMLHttpRequest.prototype, 'onreadystatechange', {});
-	    return result;
-	}
-	;
-	var unboundKey = utils_1.zoneSymbol('unbound');
-	// Whenever any eventListener fires, we check the eventListener target and all parents
-	// for `onwhatever` properties and replace them with zone-bound functions
-	// - Chrome (for now)
-	function patchViaCapturingAllTheEvents() {
-	    var _loop_1 = function(i) {
-	        var property = eventNames[i];
-	        var onproperty = 'on' + property;
-	        document.addEventListener(property, function (event) {
-	            var elt = event.target, bound, source;
-	            if (elt) {
-	                source = elt.constructor['name'] + '.' + onproperty;
-	            }
-	            else {
-	                source = 'unknown.' + onproperty;
-	            }
-	            while (elt) {
-	                if (elt[onproperty] && !elt[onproperty][unboundKey]) {
-	                    bound = Zone.current.wrap(elt[onproperty], source);
-	                    bound[unboundKey] = elt[onproperty];
-	                    elt[onproperty] = bound;
-	                }
-	                elt = elt.parentElement;
-	            }
-	        }, true);
-	    };
-	    for (var i = 0; i < eventNames.length; i++) {
-	        _loop_1(i);
-	    }
-	    ;
-	}
-	;
-
-
-/***/ },
-/* 7 */
-/***/ function(module, exports, __webpack_require__) {
-
-	"use strict";
-	var utils_1 = __webpack_require__(3);
-	// we have to patch the instance since the proto is non-configurable
-	function apply(_global) {
-	    var WS = _global.WebSocket;
-	    // On Safari window.EventTarget doesn't exist so need to patch WS add/removeEventListener
-	    // On older Chrome, no need since EventTarget was already patched
-	    if (!_global.EventTarget) {
-	        utils_1.patchEventTargetMethods(WS.prototype);
-	    }
-	    _global.WebSocket = function (a, b) {
-	        var socket = arguments.length > 1 ? new WS(a, b) : new WS(a);
-	        var proxySocket;
-	        // Safari 7.0 has non-configurable own 'onmessage' and friends properties on the socket instance
-	        var onmessageDesc = Object.getOwnPropertyDescriptor(socket, 'onmessage');
-	        if (onmessageDesc && onmessageDesc.configurable === false) {
-	            proxySocket = Object.create(socket);
-	            ['addEventListener', 'removeEventListener', 'send', 'close'].forEach(function (propName) {
-	                proxySocket[propName] = function () {
-	                    return socket[propName].apply(socket, arguments);
-	                };
-	            });
-	        }
-	        else {
-	            // we can patch the real socket
-	            proxySocket = socket;
-	        }
-	        utils_1.patchOnProperties(proxySocket, ['close', 'error', 'message', 'open']);
-	        return proxySocket;
-	    };
-	    for (var prop in WS) {
-	        _global.WebSocket[prop] = WS[prop];
-	    }
-	}
-	exports.apply = apply;
-
-
-/***/ },
-/* 8 */
-/***/ function(module, exports, __webpack_require__) {
-
-	"use strict";
-	var utils_1 = __webpack_require__(3);
-	function patchTimer(window, setName, cancelName, nameSuffix) {
-	    var setNative = null;
-	    var clearNative = null;
-	    setName += nameSuffix;
-	    cancelName += nameSuffix;
-	    function scheduleTask(task) {
-	        var data = task.data;
-	        data.args[0] = task.invoke;
-	        data.handleId = setNative.apply(window, data.args);
-	        return task;
-	    }
-	    function clearTask(task) {
-	        return clearNative(task.data.handleId);
-	    }
-	    setNative = utils_1.patchMethod(window, setName, function (delegate) { return function (self, args) {
-	        if (typeof args[0] === 'function') {
-	            var zone = Zone.current;
-	            var options = {
-	                handleId: null,
-	                isPeriodic: nameSuffix === 'Interval',
-	                delay: (nameSuffix === 'Timeout' || nameSuffix === 'Interval') ? args[1] || 0 : null,
-	                args: args
-	            };
-	            var task = zone.scheduleMacroTask(setName, args[0], options, scheduleTask, clearTask);
-	            if (!task) {
-	                return task;
-	            }
-	            // Node.js must additionally support the ref and unref functions.
-	            var handle = task.data.handleId;
-	            if (handle.ref && handle.unref) {
-	                task.ref = handle.ref.bind(handle);
-	                task.unref = handle.unref.bind(handle);
-	            }
-	            return task;
-	        }
-	        else {
-	            // cause an error by calling it directly.
-	            return delegate.apply(window, args);
-	        }
-	    }; });
-	    clearNative = utils_1.patchMethod(window, cancelName, function (delegate) { return function (self, args) {
-	        var task = args[0];
-	        if (task && typeof task.type === 'string') {
-	            if (task.cancelFn && task.data.isPeriodic || task.runCount === 0) {
-	                // Do not cancel already canceled functions
-	                task.zone.cancelTask(task);
-	            }
-	        }
-	        else {
-	            // cause an error by calling it directly.
-	            delegate.apply(window, args);
-	        }
-	    }; });
-	}
-	exports.patchTimer = patchTimer;
-
-
-/***/ }
-/******/ ]);
-}).call(this,undefined)
-},{}]},{},[3]);
+},{}]},{},[31]);
