@@ -219,7 +219,7 @@
 
 
 }).call(this,undefined)
-},{"stackframe":28}],2:[function(_dereq_,module,exports){
+},{"stackframe":26}],2:[function(_dereq_,module,exports){
 (function (define){
 /*
 * loglevel - https://github.com/pimterry/loglevel
@@ -487,7 +487,13 @@ OpbeatBackend.prototype.sendError = function (errorData) {
     }
 
     var headers = this.getHeaders()
-    this._transport.sendError(errorData, headers)
+
+    errorData = this._config.applyFilters(errorData)
+    if (!errorData) {
+      this._logger.debug('opbeat.transport.sendToOpbeat.cancelled')
+    } else {
+      return this._transport.sendError(errorData, headers)
+    }
   } else {
     this._logger.debug('Config is not valid')
   }
@@ -815,7 +821,7 @@ function traceGroupingKey (trace) {
   ].join('-')
 }
 
-},{"../lib/utils":18,"./backend_utils":3}],5:[function(_dereq_,module,exports){
+},{"../lib/utils":16,"./backend_utils":3}],5:[function(_dereq_,module,exports){
 var patchXMLHttpRequest = _dereq_('./patches/xhrPatch')
 
 function patchCommon (serviceContainer) {
@@ -923,7 +929,7 @@ var Logger = _dereq_('loglevel')
 var Config = _dereq_('../lib/config')
 
 var utils = _dereq_('../lib/utils')
-var transport = _dereq_('../lib/transport')
+var Transport = _dereq_('../lib/transport')
 var ExceptionHandler = _dereq_('../exceptions/exceptionHandler')
 var StackFrameService = _dereq_('../exceptions/stackFrameService')
 
@@ -945,7 +951,9 @@ ServiceFactory.prototype.getOpbeatBackend = function () {
 
 ServiceFactory.prototype.getTransport = function () {
   if (utils.isUndefined(this.services['Transport'])) {
-    this.services['Transport'] = transport
+    var configService = this.getConfigService()
+    var logger = this.getLogger()
+    this.services['Transport'] = new Transport(configService, logger)
   }
   return this.services['Transport']
 }
@@ -973,8 +981,9 @@ ServiceFactory.prototype.getLogger = function () {
 
 ServiceFactory.prototype.getConfigService = function () {
   if (utils.isUndefined(this.services['ConfigService'])) {
-    Config.init()
-    this.services['ConfigService'] = Config
+    var configService = new Config()
+    configService.init()
+    this.services['ConfigService'] = configService
   }
   return this.services['ConfigService']
 }
@@ -1008,7 +1017,7 @@ ServiceFactory.prototype.getPerformanceServiceContainer = function () {
 
 module.exports = ServiceFactory
 
-},{"../backend/opbeat_backend":4,"../exceptions/exceptionHandler":10,"../exceptions/stackFrameService":11,"../lib/config":14,"../lib/transport":17,"../lib/utils":18,"../performance/serviceContainer":20,"loglevel":2}],9:[function(_dereq_,module,exports){
+},{"../backend/opbeat_backend":4,"../exceptions/exceptionHandler":10,"../exceptions/stackFrameService":11,"../lib/config":14,"../lib/transport":15,"../lib/utils":16,"../performance/serviceContainer":18,"loglevel":2}],9:[function(_dereq_,module,exports){
 function Subscription () {
   this.subscriptions = []
 }
@@ -1169,7 +1178,7 @@ function getProperties (err) {
 
 module.exports = ExceptionHandler
 
-},{"../lib/utils":18,"./stacktrace":12}],11:[function(_dereq_,module,exports){
+},{"../lib/utils":16,"./stacktrace":12}],11:[function(_dereq_,module,exports){
 var utils = _dereq_('../lib/utils')
 var stackTrace = _dereq_('./stacktrace')
 
@@ -1383,7 +1392,7 @@ StackFrameService.prototype.getBrowserSpecificMetadata = function () {
 
 module.exports = StackFrameService
 
-},{"../lib/utils":18,"./stacktrace":12}],12:[function(_dereq_,module,exports){
+},{"../lib/utils":16,"./stacktrace":12}],12:[function(_dereq_,module,exports){
 var ErrorStackParser = _dereq_('error-stack-parser')
 var StackGenerator = _dereq_('stack-generator')
 var utils = _dereq_('../lib/utils')
@@ -1490,7 +1499,7 @@ function normalizeFunctionName (fnName) {
   return fnName
 }
 
-},{"../lib/utils":18,"error-stack-parser":1,"stack-generator":27}],13:[function(_dereq_,module,exports){
+},{"../lib/utils":16,"error-stack-parser":1,"stack-generator":25}],13:[function(_dereq_,module,exports){
 // export public core APIs.
 
 module.exports['ServiceFactory'] = _dereq_('./common/serviceFactory')
@@ -1503,9 +1512,7 @@ module.exports['patchUtils'] = _dereq_('./common/patchUtils')
 module.exports['patchCommon'] = _dereq_('./common/patchCommon')
 module.exports['utils'] = _dereq_('./lib/utils')
 
-module.exports['addFilter'] = _dereq_('./lib/filtering').addFilter
-
-},{"./common/patchCommon":5,"./common/patchUtils":6,"./common/serviceFactory":8,"./common/subscription":9,"./lib/config":14,"./lib/filtering":15,"./lib/utils":18,"./performance/serviceContainer":20,"./performance/transactionService":23}],14:[function(_dereq_,module,exports){
+},{"./common/patchCommon":5,"./common/patchUtils":6,"./common/serviceFactory":8,"./common/subscription":9,"./lib/config":14,"./lib/utils":16,"./performance/serviceContainer":18,"./performance/transactionService":21}],14:[function(_dereq_,module,exports){
 var utils = _dereq_('./utils')
 var Subscription = _dereq_('../common/subscription')
 
@@ -1513,8 +1520,9 @@ function Config () {
   this.config = {}
   this.defaults = {
     opbeatAgentName: 'opbeat-js',
-    VERSION: 'v3.15.0',
+    VERSION: 'v3.15.1',
     apiOrigin: 'https://intake.opbeat.com',
+    apiUrlPrefix: '/api/v1',
     isInstalled: false,
     debug: false,
     logLevel: 'warn',
@@ -1541,6 +1549,24 @@ function Config () {
   }
 
   this._changeSubscription = new Subscription()
+  this.filters = []
+}
+
+Config.prototype.addFilter = function addFilter (cb) {
+  if (typeof cb !== 'function') {
+    throw new Error('Argument to must be function')
+  }
+  this.filters.push(cb)
+}
+
+Config.prototype.applyFilters = function applyFilters (data) {
+  for (var i = 0; i < this.filters.length; i++) {
+    data = this.filters[i](data)
+    if (!data) {
+      return
+    }
+  }
+  return data
 }
 
 Config.prototype.init = function () {
@@ -1552,6 +1578,11 @@ Config.prototype.get = function (key) {
   return utils.arrayReduce(key.split('.'), function (obj, i) {
     return obj && obj[i]
   }, this.config)
+}
+
+Config.prototype.getEndpointUrl = function getEndpointUrl (endpoint) {
+  var url = this.get('apiOrigin') + this.get('apiUrlPrefix') + '/organizations/' + this.get('orgId') + '/apps/' + this.get('appId') + '/client-side/' + endpoint + '/'
+  return url
 }
 
 Config.prototype.set = function (key, value) {
@@ -1631,7 +1662,7 @@ function _getDataAttributesFromNode (node) {
   return dataAttrs
 }
 
-Config.prototype.VERSION = 'v3.15.0'
+Config.prototype.VERSION = 'v3.15.1'
 
 Config.prototype.isPlatformSupported = function () {
   return typeof Array.prototype.forEach === 'function' &&
@@ -1642,103 +1673,36 @@ Config.prototype.isPlatformSupported = function () {
     utils.isCORSSupported()
 }
 
-module.exports = new Config()
+module.exports = Config
 
-},{"../common/subscription":9,"./utils":18}],15:[function(_dereq_,module,exports){
-var filters = []
-
-module.exports = {
-  addFilter: function addFilter (cb) {
-    if (typeof cb !== 'function') {
-      throw new Error("Argument to 'addFilter' must be function")
-    }
-    filters.push(cb)
-  },
-  applyFilters: function (data) {
-    for (var i = 0; i < filters.length; i++) {
-      data = filters[i](data)
-      if (!data) {
-        return
-      }
-    }
-    return data
-  }
+},{"../common/subscription":9,"./utils":16}],15:[function(_dereq_,module,exports){
+function Transport (configService, logger) {
+  this.configService = configService
+  this.logger = logger
 }
 
-},{}],16:[function(_dereq_,module,exports){
-var config = _dereq_('./config')
-
-var logStack = []
-
-module.exports = {
-  getLogStack: function () {
-    return logStack
-  },
-
-  error: function (msg, data) {
-    return this.log('%c ' + msg, 'color: red', data)
-  },
-
-  warning: function (msg, data) {
-    return this.log('%c ' + msg, 'background-color: ffff00', data)
-  },
-
-  log: function (message, data) {
-    // Optimized copy of arguments (V8 https://github.com/GoogleChrome/devtools-docs/issues/53#issuecomment-51941358)
-    var args = new Array(arguments.length)
-    for (var i = 0, l = arguments.length; i < l; i++) {
-      args[i] = arguments[i]
-    }
-
-    var isDebugMode = config.get('debug') === true || config.get('debug') === 'true'
-    var hasConsole = window.console
-
-    logStack.push({
-      msg: message,
-      data: args.slice(1)
-    })
-
-    if (isDebugMode && hasConsole) {
-      if (typeof Function.prototype.bind === 'function') {
-        return window.console.log.apply(window.console, args)
-      } else {
-        return Function.prototype.apply.call(window.console.log, window.console, args)
-      }
-    }
-  }
+Transport.prototype.sendError = function sendError (data, headers) {
+  return this._sendToOpbeat('errors', data, headers)
 }
 
-},{"./config":14}],17:[function(_dereq_,module,exports){
-var logger = _dereq_('./logger')
-var config = _dereq_('./config')
-
-var applyFilters = _dereq_('./filtering').applyFilters
-
-module.exports = {
-  sendError: function (data, headers) {
-    data = applyFilters(data)
-    if (!data) {
-      logger.log('opbeat.transport.sendToOpbeat.cancelled')
-    }
-
-    return _sendToOpbeat('errors', data, headers)
-  },
-
-  sendTransaction: function (data, headers) {
-    return _sendToOpbeat('transactions', data, headers)
-  },
-
-  getFile: function (fileUrl) {
-    return _makeRequest(fileUrl, 'GET', '', {})
-  }
+Transport.prototype.sendTransaction = function sendTransaction (data, headers) {
+  return this._sendToOpbeat('transactions', data, headers)
 }
 
-function _sendToOpbeat (endpoint, data, headers) {
-  logger.log('opbeat.transport.sendToOpbeat', data)
+Transport.prototype._sendToOpbeat = function _sendToOpbeat (endpoint, data, headers) {
+  var self = this
+  this.logger.debug('opbeat.transport.sendToOpbeat', data)
 
-  var url = config.get('apiOrigin') + '/api/v1/organizations/' + config.get('orgId') + '/apps/' + config.get('appId') + '/client-side/' + endpoint + '/'
+  var url = this.configService.getEndpointUrl(endpoint)
 
   return _makeRequest(url, 'POST', 'JSON', data, headers)
+    .then(function (response) {
+      self.logger.debug('opbeat.transport.makeRequest.success')
+      return response
+    }, function (reason) {
+      self.logger.debug('opbeat.transport.makeRequest.error', reason)
+      return Promise.reject(reason)
+    })
 }
 
 function _makeRequest (url, method, type, data, headers) {
@@ -1768,17 +1732,14 @@ function _makeRequest (url, method, type, data, headers) {
           var err = new Error(url + ' HTTP status: ' + status)
           err.xhr = xhr
           reject(err)
-          logger.log('opbeat.transport.makeRequest.error', err)
         } else {
           resolve(xhr.responseText)
-          logger.log('opbeat.transport.makeRequest.success')
         }
       }
     }
 
     xhr.onerror = function (err) {
       reject(err)
-      logger.log('opbeat.transport.makeRequest.error', err)
     }
 
     if (type === 'JSON') {
@@ -1789,7 +1750,9 @@ function _makeRequest (url, method, type, data, headers) {
   })
 }
 
-},{"./config":14,"./filtering":15,"./logger":16}],18:[function(_dereq_,module,exports){
+module.exports = Transport
+
+},{}],16:[function(_dereq_,module,exports){
 var slice = [].slice
 
 module.exports = {
@@ -2067,7 +2030,7 @@ function isFunction (value) {
   return typeof value === 'function'
 }
 
-},{}],19:[function(_dereq_,module,exports){
+},{}],17:[function(_dereq_,module,exports){
 var Trace = _dereq_('./trace')
 
 var eventPairs = [
@@ -2176,7 +2139,7 @@ module.exports = function captureHardNavigation (transaction) {
   return 0
 }
 
-},{"./trace":21}],20:[function(_dereq_,module,exports){
+},{"./trace":19}],18:[function(_dereq_,module,exports){
 var TransactionService = _dereq_('./transactionService')
 var ZoneService = _dereq_('./zoneService')
 var utils = _dereq_('../lib/utils')
@@ -2223,7 +2186,7 @@ ServiceContainer.prototype.createZoneService = function () {
 
 module.exports = ServiceContainer
 
-},{"../lib/utils":18,"./transactionService":23,"./zoneService":24}],21:[function(_dereq_,module,exports){
+},{"../lib/utils":16,"./transactionService":21,"./zoneService":22}],19:[function(_dereq_,module,exports){
 var utils = _dereq_('../lib/utils')
 
 function Trace (transaction, signature, type, options) {
@@ -2315,7 +2278,7 @@ Trace.prototype.getTraceStackFrames = function (callback) {
 
 module.exports = Trace
 
-},{"../lib/utils":18}],22:[function(_dereq_,module,exports){
+},{"../lib/utils":16}],20:[function(_dereq_,module,exports){
 var Trace = _dereq_('./trace')
 var utils = _dereq_('../lib/utils')
 
@@ -2348,10 +2311,7 @@ var Transaction = function (name, type, options, logger) {
 
   this.events = {}
 
-  Promise.call(this.donePromise = Object.create(Promise.prototype), function (resolve, reject) {
-    this._resolve = resolve
-    this._reject = reject
-  }.bind(this.donePromise))
+  this.doneCallback = function noop () {}
 
   // A transaction should always have a root trace spanning the entire transaction.
   this._rootTrace = this.startTrace('transaction', 'transaction', {enableStackFrames: false})
@@ -2449,7 +2409,6 @@ Transaction.prototype.end = function () {
   if (this.isFinished() === true) {
     this._finish()
   }
-  return this.donePromise
 }
 
 Transaction.prototype.addTask = function (taskId) {
@@ -2495,7 +2454,7 @@ Transaction.prototype._finish = function () {
 
   this._adjustStartToEarliestTrace()
   this._adjustEndToLatestTrace()
-  this.donePromise._resolve(this)
+  this.doneCallback(this)
 }
 
 Transaction.prototype._adjustEndToLatestTrace = function () {
@@ -2533,8 +2492,8 @@ function findLatestNonXHRTrace (traces) {
   for (var i = 0; i < traces.length; i++) {
     var trace = traces[i]
     if (trace.type && trace.type.indexOf('ext') === -1 &&
-         trace.type !== 'transaction' &&
-         (!latestTrace || latestTrace._end < trace._end)) {
+      trace.type !== 'transaction' &&
+      (!latestTrace || latestTrace._end < trace._end)) {
       latestTrace = trace
     }
   }
@@ -2558,7 +2517,7 @@ function getEarliestTrace (traces) {
 
 module.exports = Transaction
 
-},{"../lib/utils":18,"./trace":21}],23:[function(_dereq_,module,exports){
+},{"../lib/utils":16,"./trace":19}],21:[function(_dereq_,module,exports){
 var Transaction = _dereq_('./transaction')
 var utils = _dereq_('../lib/utils')
 var Subscription = _dereq_('../common/subscription')
@@ -2716,13 +2675,15 @@ TransactionService.prototype.sendPageLoadMetrics = function (name) {
   }
   tr.isHardNavigation = true
 
-  tr.donePromise.then(function () {
-    var captured = self.capturePageLoadMetrics(tr)
-    if (captured) {
-      self.add(tr)
-      self._subscription.applyAll(self, [tr])
-    }
-  })
+  tr.doneCallback = function () {
+    self.applyAsync(function () {
+      var captured = self.capturePageLoadMetrics(tr)
+      if (captured) {
+        self.add(tr)
+        self._subscription.applyAll(self, [tr])
+      }
+    })
+  }
   tr.detectFinish()
   return tr
 }
@@ -2763,16 +2724,27 @@ TransactionService.prototype.startTransaction = function (name, type) {
   }
 
   this._logger.debug('TransactionService.startTransaction', tr)
-  tr.donePromise.then(function () {
-    self._logger.debug('TransactionService transaction finished', tr)
+  tr.doneCallback = function () {
+    self.applyAsync(function () {
+      self._logger.debug('TransactionService transaction finished', tr)
 
-    if (tr.traces.length > 1 && !self.shouldIgnoreTransaction(tr.name)) {
-      self.capturePageLoadMetrics(tr)
-      self.add(tr)
-      self._subscription.applyAll(self, [tr])
-    }
-  })
+      if (tr.traces.length > 1 && !self.shouldIgnoreTransaction(tr.name)) {
+        self.capturePageLoadMetrics(tr)
+        self.add(tr)
+        self._subscription.applyAll(self, [tr])
+      }
+    })
+  }
   return tr
+}
+
+TransactionService.prototype.applyAsync = function (fn, applyThis, applyArgs) {
+  return this._zoneService.runOuter(function () {
+    return Promise.resolve()
+      .then(function () {
+        return fn.apply(applyThis, applyArgs)
+      })
+  })
 }
 
 TransactionService.prototype.shouldIgnoreTransaction = function (transaction_name) {
@@ -2874,14 +2846,19 @@ TransactionService.prototype.scheduleTransactionSend = function () {
     }
     logger.debug('Sending Transactions to opbeat.', transactions.length)
     // todo: if transactions are already being sent, should check
-    opbeatBackend.sendTransactions(transactions)
+    var promise = opbeatBackend.sendTransactions(transactions)
+    if (promise) {
+      promise.then(undefined, function () {
+        logger.debug('Failed sending transactions!')
+      })
+    }
     self.clearTransactions()
   }, 5000)
 }
 
 module.exports = TransactionService
 
-},{"../common/subscription":9,"../lib/utils":18,"./captureHardNavigation":19,"./transaction":22}],24:[function(_dereq_,module,exports){
+},{"../common/subscription":9,"../lib/utils":16,"./captureHardNavigation":17,"./transaction":20}],22:[function(_dereq_,module,exports){
 var Subscription = _dereq_('../common/subscription')
 var patchUtils = _dereq_('../common/patchUtils')
 var opbeatTaskSymbol = patchUtils.opbeatSymbol('taskData')
@@ -3122,8 +3099,12 @@ ZoneService.prototype.isOpbeatZone = function () {
   return this.zone.name === window.Zone.current.name
 }
 
-ZoneService.prototype.runOuter = function (fn) {
-  return this.outer.run(fn)
+ZoneService.prototype.runOuter = function (fn, applyThis, applyArgs) {
+  if (this.outer) {
+    return this.outer.run(fn, applyThis, applyArgs)
+  } else {
+    return fn.apply(applyThis, applyArgs)
+  }
 }
 
 ZoneService.prototype.runInOpbeatZone = function runInOpbeatZone (fn, applyThis, applyArgs, source) {
@@ -3132,7 +3113,7 @@ ZoneService.prototype.runInOpbeatZone = function runInOpbeatZone (fn, applyThis,
 
 module.exports = ZoneService
 
-},{"../common/patchUtils":6,"../common/subscription":9}],25:[function(_dereq_,module,exports){
+},{"../common/patchUtils":6,"../common/subscription":9}],23:[function(_dereq_,module,exports){
 (function (global,define){
 /**
 * @license
@@ -5513,7 +5494,7 @@ Zone.__load_patch('util', function (global, Zone, api) {
 })));
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},undefined)
-},{}],26:[function(_dereq_,module,exports){
+},{}],24:[function(_dereq_,module,exports){
 (function (define){
 (function(root, factory) {
     'use strict';
@@ -5628,7 +5609,7 @@ Zone.__load_patch('util', function (global, Zone, api) {
 }));
 
 }).call(this,undefined)
-},{}],27:[function(_dereq_,module,exports){
+},{}],25:[function(_dereq_,module,exports){
 (function (define){
 (function (root, factory) {
     'use strict';
@@ -5677,7 +5658,7 @@ Zone.__load_patch('util', function (global, Zone, api) {
 }));
 
 }).call(this,undefined)
-},{"stackframe":26}],28:[function(_dereq_,module,exports){
+},{"stackframe":24}],26:[function(_dereq_,module,exports){
 (function (define){
 (function (root, factory) {
     'use strict';
@@ -5788,7 +5769,7 @@ Zone.__load_patch('util', function (global, Zone, api) {
 }));
 
 }).call(this,undefined)
-},{}],29:[function(_dereq_,module,exports){
+},{}],27:[function(_dereq_,module,exports){
 var ngOpbeat = _dereq_('./ngOpbeat')
 var patchAngularBootstrap = _dereq_('./patches/bootstrapPatch')
 var patchCommon = _dereq_('opbeat-js-core').patchCommon
@@ -5846,7 +5827,7 @@ function registerOpbeatModule (services) {
 
 module.exports = initialize
 
-},{"./ngOpbeat":30,"./patches/bootstrapPatch":32,"opbeat-js-core":13}],30:[function(_dereq_,module,exports){
+},{"./ngOpbeat":28,"./patches/bootstrapPatch":30,"opbeat-js-core":13}],28:[function(_dereq_,module,exports){
 var patchController = _dereq_('./patches/controllerPatch')
 var patchCompile = _dereq_('./patches/compilePatch')
 var patchRootScope = _dereq_('./patches/rootScopePatch')
@@ -6039,7 +6020,7 @@ function registerOpbeatModule (services) {
 
 module.exports = registerOpbeatModule
 
-},{"./patches/compilePatch":33,"./patches/controllerPatch":34,"./patches/directivesPatch":35,"./patches/exceptionHandlerPatch":36,"./patches/interactionsPatch":37,"./patches/rootScopePatch":38,"opbeat-js-core":13}],31:[function(_dereq_,module,exports){
+},{"./patches/compilePatch":31,"./patches/controllerPatch":32,"./patches/directivesPatch":33,"./patches/exceptionHandlerPatch":34,"./patches/interactionsPatch":35,"./patches/rootScopePatch":36,"opbeat-js-core":13}],29:[function(_dereq_,module,exports){
 var opbeatCore = _dereq_('opbeat-js-core')
 var ServiceFactory = opbeatCore.ServiceFactory
 var angularInitializer = _dereq_('./angularInitializer')
@@ -6055,7 +6036,7 @@ function init () {
 
 init()
 
-},{"./angularInitializer":29,"opbeat-js-core":13,"opbeat-zone":25}],32:[function(_dereq_,module,exports){
+},{"./angularInitializer":27,"opbeat-js-core":13,"opbeat-zone":23}],30:[function(_dereq_,module,exports){
 var DEFER_LABEL = 'NG_DEFER_BOOTSTRAP!'
 var deferRegex = new RegExp('^' + DEFER_LABEL + '.*')
 
@@ -6166,7 +6147,7 @@ function patchAngularBootstrap (opbeatBootstrap) {
 
 module.exports = patchAngularBootstrap
 
-},{}],33:[function(_dereq_,module,exports){
+},{}],31:[function(_dereq_,module,exports){
 var opbeatCore = _dereq_('opbeat-js-core')
 var patchUtils = opbeatCore.patchUtils
 var utils = opbeatCore.utils
@@ -6195,7 +6176,7 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{"opbeat-js-core":13}],34:[function(_dereq_,module,exports){
+},{"opbeat-js-core":13}],32:[function(_dereq_,module,exports){
 var utils = _dereq_('opbeat-js-core').utils
 
 function getControllerInfoFromArgs (args) {
@@ -6245,7 +6226,7 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{"opbeat-js-core":13}],35:[function(_dereq_,module,exports){
+},{"opbeat-js-core":13}],33:[function(_dereq_,module,exports){
 var utils = _dereq_('opbeat-js-core').utils
 module.exports = function ($provide, transactionService) {
   'use strict'
@@ -6307,7 +6288,7 @@ function humanReadableWatchExpression (fn) {
   return fn.toString()
 }
 
-},{"opbeat-js-core":13}],36:[function(_dereq_,module,exports){
+},{"opbeat-js-core":13}],34:[function(_dereq_,module,exports){
 
 module.exports = function patchExceptionHandler ($provide) {
   $provide.decorator('$exceptionHandler', ['$delegate', '$opbeat', function $ExceptionHandlerDecorator ($delegate, $opbeat) {
@@ -6318,7 +6299,7 @@ module.exports = function patchExceptionHandler ($provide) {
   }])
 }
 
-},{}],37:[function(_dereq_,module,exports){
+},{}],35:[function(_dereq_,module,exports){
 module.exports = function ($provide, transactionService) {
   'use strict'
   function patchEventDirective (delegate, eventName) {
@@ -6349,7 +6330,7 @@ module.exports = function ($provide, transactionService) {
   }])
 }
 
-},{}],38:[function(_dereq_,module,exports){
+},{}],36:[function(_dereq_,module,exports){
 module.exports = function ($provide, transactionService) {
   $provide.decorator('$rootScope', ['$delegate', '$injector', function ($delegate, $injector) {
     return decorateRootScope($delegate, transactionService)
@@ -6372,4 +6353,4 @@ function decorateRootScope ($delegate, transactionService) {
   return $delegate
 }
 
-},{}]},{},[31]);
+},{}]},{},[29]);
